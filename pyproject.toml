@@ -1,5 +1,5 @@
 [project]
-name = "lerobot-policy-openvla-oft"
+name = "lerobot_policy_openvla_oft"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
