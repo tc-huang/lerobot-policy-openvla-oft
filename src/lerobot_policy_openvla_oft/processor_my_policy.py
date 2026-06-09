@@ -1,0 +1,18 @@
+# processor_my_policy.py
+from typing import Any
+import torch
+
+from lerobot.processor import PolicyAction, PolicyProcessorPipeline
+
+
+def make_my_policy_pre_post_processors(
+    config,
+    dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
+) -> tuple[
+    PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
+    PolicyProcessorPipeline[PolicyAction, PolicyAction],
+]:
+    raise NotImplementedError("Not implemented")
+    preprocessor = None   # build your PolicyProcessorPipeline for inputs
+    postprocessor = None  # build your PolicyProcessorPipeline for outputs
+    return preprocessor, postprocessor
