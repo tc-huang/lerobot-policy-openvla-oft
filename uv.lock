@@ -926,6 +926,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "lerobot" },
+    { name = "torch" },
 ]
 
 [package.dev-dependencies]
@@ -937,7 +938,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "lerobot", specifier = ">=0.5.1" }]
+requires-dist = [
+    { name = "lerobot", specifier = ">=0.5.1" },
+    { name = "torch", specifier = ">=2.10.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [
