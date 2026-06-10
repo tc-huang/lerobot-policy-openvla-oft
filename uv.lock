@@ -923,7 +923,7 @@ wheels = [
 [[package]]
 name = "lerobot-policy-openvla-oft"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "lerobot" },
     { name = "torch" },
