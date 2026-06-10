@@ -36,10 +36,6 @@ policy plugin `lerobot_policy_openvla_oft`，載入 `moojink/openvla-7b-oft-fine
   的底線名 `lerobot_policy_openvla_oft`（現有 pyproject 已是底線，OK）。但 **plugin 目前未安裝成
   distribution**（`importlib.metadata` 只看得到 `lerobot`），且 `pyproject.toml` **沒有 `[build-system]`**，
   必須補上才能 editable 安裝並被探索到。
-- **命名 bug（必修）**：`references/lerobot/src/lerobot/policies/factory.py:620-632`
-  第三方 policy 類別由 `config類別名.removesuffix("Config") + "Policy"` 推導，module 由
-  `configuration_` → `modeling_` 推導。現有 config 叫 `OpenvlaOftPolicyConfig` 會推出
-  `OpenvlaOftPolicyPolicy`，但 modeling 是 `OpenvlaOftPolicy`，eval 時會 `AttributeError`。
 - **processor 推導**：`factory.py:651-660` 由 `config.type`（註冊字串）組 `make_{type}_pre_post_processors`，
   module 由 `configuration_` → `processor_`。
 - **修正方案（比照 pi0）**：註冊字串 `openvla_oft`、config 類別 `OpenvlaOftConfig`、
