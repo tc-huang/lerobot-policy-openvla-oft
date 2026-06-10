@@ -18,10 +18,15 @@ policy plugin `lerobot_policy_openvla_oft`，載入 `moojink/openvla-7b-oft-fine
 ### 「native 重寫」的務實界定
 
 不是把 7B VLM 從零重寫。界定為：
-1. **模型本體**：把 OFT 的 model 類別（`PrismaticVisionBackbone`、`PrismaticProjector`、
-   `OpenVLAForActionPrediction` 的平行解碼 forward、`L1RegressionActionHead`、`ProprioProjector`）
-   乾淨移植進 plugin 的 `model/` 子模組，**沿用 moojink 預訓練權重**，但不 import `prismatic` 套件
-   （避開其 `__init__` 拖進 dlimp / tensorflow 訓練鏈）。
+1. **模型本體（兩階段，已調整）**：OFT 推論需要的 model 類別（`PrismaticVisionBackbone`、`PrismaticProjector`、
+   `OpenVLAForActionPrediction` 的平行解碼 forward、`L1RegressionActionHead`、`ProprioProjector`）原始碼，
+   已整包 vendored 進 `src/lerobot_policy_openvla_oft/prismatic/`（完整上游套件，66 個 .py）。
+   - **Phase A（先能動，本輪 M1）**：直接沿用這份 vendored `prismatic/`，**砍掉推論用不到的檔案與分支**
+     （RLDS/OXE 資料管線、FSDP/DDP 訓練、原生載入路徑、FiLM、diffusion），修掉絕對 import 與 import 副作用，
+     讓推論路徑可離線載入、不拖 dlimp / tensorflow / diffusers。
+   - **Phase B（後重構，非阻塞）**：通過 M5 正確性 gate 後，再一步步把保留檔搬進乾淨的 `model/` 子模組、
+     砍死分支，收斂成 plugin-native 結構。
+   兩階段都**沿用 moojink 預訓練權重**，且不 import 上游真正的 `prismatic` 套件根（避開其拖進 dlimp / tensorflow）。
 2. **所有 I/O 與正規化**：改用 LeRobot 慣例，即 `NormalizerProcessorStep` / `UnnormalizerProcessorStep`、
    `TokenizerProcessorStep`、自訂影像 `ProcessorStep`，而非 OFT 的 `openvla_utils.get_vla_action` 或
    模型內建的 `_unnormalize_actions`。模型只吐 normalized 動作，反正規化交給 postprocessor。
@@ -74,16 +79,166 @@ policy plugin `lerobot_policy_openvla_oft`，載入 `moojink/openvla-7b-oft-fine
 - **DoD**：`importlib.metadata` 看得到 `lerobot_policy_openvla_oft`；`register_third_party_plugins()` 能
   import 成功；確認 installed lerobot 有 `LiberoProcessorStep`。
 
-### M1 — 移植 OFT 模型最小子集（沿用權重，不靠 prismatic 套件）
-- 在 `modeling_openvla_oft.py`（或新增 `model/` 子模組）移植：
-  `PrismaticVisionBackbone`（SigLIP+DINOv2 融合、多影像）、`PrismaticProjector`、
-  `OpenVLAForActionPrediction` 的平行解碼 forward 與 `predict_action`（**移除內建反正規化**，只回 normalized
-  動作）、`L1RegressionActionHead`（`references/openvla-oft/prismatic/models/action_heads.py`）、
-  `ProprioProjector`（`projectors.py`）。Llama-2 decoder 用 `transformers` 的 `AutoModelForCausalLM` 載入。
-- 權重載入：從 `moojink/openvla-7b-oft-finetuned-libero-spatial` 取「合併後的 base VLA」+
-  `action_head--*.pt` + `proprio_projector--*.pt` + `dataset_statistics.json`，灌進移植後的模組。
-- **DoD**：能在 CPU 上 `from_pretrained` 並對假輸入跑出 `(1, 8, 7)` 形狀的 normalized 動作，不 import 到
-  tensorflow / dlimp。
+### M1 — 讓 vendored `prismatic/` 的推論路徑可用（Phase A：先能動）
+
+> 背景：完整上游 `prismatic` 套件已整包 vendored 進 `src/lerobot_policy_openvla_oft/prismatic/`
+> （66 個 .py，含推論關鍵的 `extern/hf/modeling_prismatic.py`）。本里程碑**不從零重寫**，而是
+> 「就地沿用、砍到能跑」：刪掉推論用不到的檔案與分支、修掉會擋 import 的問題，讓
+> `modeling_openvla_oft.py` 能 import 到 `OpenVLAForActionPrediction` / `L1RegressionActionHead` /
+> `ProprioProjector` 並對假輸入吐出 `(1, 8, 7)` normalized 動作。乾淨化（搬進 `model/`、砍死分支）
+> 留到 **Phase B**（M1 之後、可在 M5 gate 通過後做，不阻塞 M6）。
+
+已查證的 vendored 現況（讀原始碼確認）：
+- `OpenVLAForActionPrediction` 在 `prismatic/extern/hf/modeling_prismatic.py:720`；`L1RegressionActionHead` /
+  `MLPResNet` 在 `models/action_heads.py:84` / `:59`；`ProprioProjector` 在 `models/projectors.py`。
+- **阻塞 1（絕對 import）**：66 檔中 36 檔用 `from prismatic.…` 絕對 import。改名成
+  `lerobot_policy_openvla_oft.prismatic` 後 top-level `prismatic` 不存在，`modeling_prismatic.py:24,28` 會
+  `ModuleNotFoundError`。
+- **阻塞 2（diffusers）**：`action_heads.py:7` module 頂層 `from diffusers… import DDIMScheduler`，與要用的
+  `L1RegressionActionHead` 同檔；`modeling_prismatic.py` 本身不 import diffusers（diffusion 分支只在 runtime 走）。
+- **阻塞 3（constants 副作用）**：`vla/constants.py:49-86` 在 import 時用 `sys.argv` 偵測平台並 print 6 行。
+- **阻塞 4（相依未裝）**：env 目前只有 `lerobot 0.5.2`，`transformers/timm/tokenizers` 全 missing（屬 M0）。
+- **好消息**：`prismatic/__init__.py`、`extern/__init__.py`、`extern/hf/__init__.py` 已被清成空檔，eager
+  import chain 已斷；`tensorflow/dlimp` 只在 `vla/datasets/rlds/*`，推論路徑不碰。
+
+**M1.A0 砍掉推論用不到的子樹（減面積、移除 tf/dlimp/FiLM/diffusion 來源）**
+- 刪：`vla/datasets/`（整套 RLDS/OXE 訓練資料管線，唯一會拖 tensorflow/dlimp 的地方）、
+  `training/strategies/`、`training/{materialize,metrics}.py`（FSDP/DDP/metrics，訓練用）、
+  `models/{vlms,vlas,backbones}/`、`models/{load,materialize,registry}.py`、`models/film_vit_wrapper.py`、
+  `vla/{materialize,action_tokenizer}.py`（原生 prismatic 載入路徑與 FiLM，HF extern 推論路徑用不到）。
+- 保留：`extern/hf/{modeling_prismatic,configuration_prismatic,processing_prismatic}.py`、
+  `models/{action_heads,projectors}.py`、`vla/constants.py`、`training/train_utils.py`（兩個 action mask）。
+- 砍完逐一確認保留檔的 import 不再指向被刪檔（grep `from prismatic` 收斂到保留集合內）。
+
+**M1.A1 修絕對 import**
+- 把保留檔內 `from prismatic.…` 改成套件絕對 `from lerobot_policy_openvla_oft.prismatic.…`（或相對）。範圍只剩
+  少數：`modeling_prismatic.py`（train_utils、constants）、`action_heads.py`（constants）、`train_utils.py` 等。
+
+**M1.A2 去 diffusers（只留 L1 路徑）**
+- `action_heads.py`：移除 `from diffusers…` import，刪 `SinusoidalPositionalEncoding` / `NoisePredictionModel` /
+  `DiffusionActionHead`，只保留 `MLPResNet` + `L1RegressionActionHead`。
+- `modeling_prismatic.py` 的 diffusion 分支（`predict_action` 內 `use_diffusion` 區段、約 `:798-870`）import-time
+  不碰 diffusers，**Phase A 先留著不動**，Phase B 再砍死分支。
+
+**M1.A3 去 constants.py 的 import 副作用**
+- `vla/constants.py`：把 `sys.argv` 平台偵測與 6 行 print 換成直接寫死 LIBERO 常數
+  （`NUM_ACTIONS_CHUNK=8`、`ACTION_DIM=7`、`PROPRIO_DIM=8`、`ACTION_PROPRIO_NORMALIZATION_TYPE=BOUNDS_Q99`、
+  `IGNORE_INDEX=-100`、`ACTION_TOKEN_BEGIN_IDX=31743`、`STOP_INDEX=2`），保留同名 export 不變。
+
+**M1.A4 權重載入 + 對外介面（包裝 `OpenvlaOftModel`）**
+- 比照 `references/openvla-oft/experiments/robot/openvla_utils.py`，`__init__` 依序載入：base VLA
+  （`OpenVLAConfig.from_pretrained` → `OpenVLAForActionPrediction.from_pretrained(..., low_cpu_mem_usage=True)`，
+  **不 `trust_remote_code`**，用 vendored 類別；載入後 `vision_backbone.set_num_images_in_input(2)`）、action head
+  （`hf_hub_download` checkpoint → 去 DDP `module.` 前綴 → `L1RegressionActionHead.load_state_dict`）、proprio
+  projector（同上 → `ProprioProjector(llm_dim, 8)`）、`dataset_statistics.json`（先存，M3 才轉 `dataset_stats`）。
+- 對外 `predict_action_chunk(pixel_values, input_ids, attention_mask, proprio)`：呼叫
+  `base_vla.predict_action(..., action_head=…, proprio=…, proprio_projector=…, use_film=False,
+  noisy_action_projector=None)`，把 `(8,7)` → `(1,8,7)` normalized（batch=1 假設，**不在模型內反正規化**）。
+- checkpoint 步數先寫死 spatial（150000）；其餘 repo 之後再做對照表。
+
+- **DoD（Phase A）**：
+  1. `import lerobot_policy_openvla_oft.prismatic.extern.hf.modeling_prismatic` 與後續載入不報錯，且
+     `sys.modules` 不含 `tensorflow` / `dlimp` / `diffusers`。
+  2. CPU 上 `OpenvlaOftModel(repo="moojink/openvla-7b-oft-finetuned-libero-spatial")` 載入 base VLA + action head
+     + proprio projector 成功。
+  3. 假輸入（`pixel_values (1,12,224,224)`、合法 `input_ids`/`attention_mask`、`proprio (1,8)`）跑
+     `predict_action_chunk` 回 `(1, 8, 7)` 無例外。
+  4. 釘定可用 transformers 版本（先試 fork `4.40.1`；衝突則記錄實測可載 Llama-2 `inputs_embeds` 路徑的版本）。
+
+---
+
+#### Phase B 漸進重構參考（M5 gate 通過後再做，非阻塞）
+
+> 目標：把上面保留的 vendored 檔逐步搬進乾淨的 `model/` 子模組、移除 `modeling_prismatic.py` 的 diffusion/FiLM
+> 死分支與推論未用檔（如 `processing_prismatic.py`），收斂成 plugin-native。以下 M1.0–M1.7 為原規畫的「從零抽
+> `model/`」細目，作為 Phase B 的重構藍圖；**來源改為已 vendored 的 `prismatic/`**（不再從 `references/` 複製）。
+
+**M1.0 建子模組骨架 + 內聯常數（切斷 prismatic 依賴鏈）**
+- 新增 `src/lerobot_policy_openvla_oft/model/`，內含：
+  - `constants.py`：直接寫死 LIBERO 常數（`NUM_ACTIONS_CHUNK=8`、`ACTION_DIM=7`、`PROPRIO_DIM=8`、
+    `IGNORE_INDEX=-100`、`ACTION_TOKEN_BEGIN_IDX=31743`、`STOP_INDEX=2`）。**不要** import
+    `prismatic.vla.constants`（那支會在 import 時 print 並依 `sys.argv` 自動選平台）。
+  - `masking.py`：複製 `get_current_action_mask` / `get_next_actions_mask`
+    （`references/openvla-oft/prismatic/training/train_utils.py:8-39`），只依賴上面的 `constants`。
+
+**M1.1 移植 HF 內部模型設定（注意：不是 M2 的 policy config）**
+- 把 `references/openvla-oft/prismatic/extern/hf/configuration_prismatic.py` 的 `PrismaticConfig` +
+  `OpenVLAConfig` 原樣複製進 `model/configuration_prismatic.py`（只依賴 `transformers`，無 prismatic 依賴）。
+- moojink-libero-spatial 的 `config.json` 會帶 `vision_backbone_id="dinosiglip-vit-so-224px"`、
+  `llm_backbone_id="llama2-7b-pure"`、`use_fused_vision_backbone=True`、`text_config`(LlamaConfig)、
+  `norm_stats`、`n_action_bins=256` 等，**由 hub config.json 還原即可，不用自己填**。
+- 這個 config 是給 HF `from_pretrained` 當「權重容器設定」用，**與 M2 的 `OpenvlaOftConfig`（policy 設定）是兩回事**。
+
+**M1.2 移植視覺 backbone + projector（純 nn.Module）**
+- `PrismaticVisionBackbone`（`modeling_prismatic.py:67-227`）整段照搬，含：`_create_featurizer`
+  （`timm.create_model(pretrained=False)` + monkey-patch `forward` 取倒數第二層
+  `get_intermediate_layers`）、`_patch_layer_scales`（把 LayerScale 的 `gamma` 改名 `scale_factor`，
+  避開 HF 對含 `gamma` 參數的覆寫）、多影像 `forward`（每張影像 6 channel：SigLIP 前 3、DINOv2 後 3）。
+- `PrismaticProjector`（`modeling_prismatic.py:231-262`）整段照搬（fused 版 fc1/fc2/fc3 + 2 個 GELU）。
+- 依賴只剩 `timm`（**0.9.10/0.9.11/0.9.12/0.9.16**，modeling 內有版本斷言）、`torch`。
+
+**M1.3 移植主模型骨幹（砍掉 diffusion / FiLM / discrete 分支）**
+- 複製 `PrismaticPreTrainedModel` + `PrismaticForConditionalGeneration`，保留：`__init__`
+  （vision_backbone + projector + `AutoModelForCausalLM.from_config(text_config)` 載 Llama-2 decoder）、
+  HF boilerplate（get/set embeddings…）、`_process_action_masks`、`_process_vision_features`
+  （**只留無 FiLM 分支**）、`_process_proprio_features`、`_build_multimodal_attention`、
+  `_build_multimodal_labels`、multimodal `forward`。
+- **砍掉**：`_replace_input_embeddings`、`noisy_actions` / `noisy_action_projector` /
+  `diffusion_timestep_embeddings` 相關分支、所有 FiLM 路徑（縮小面積、避免拖 diffusers / peft）。
+
+**M1.4 移植 `predict_action`（只留 L1 regression，且移除內建反正規化）**
+- 保留 `_prepare_input_for_action_prediction`（補 `ACTION_DIM*NUM_ACTIONS_CHUNK=56` 個 placeholder
+  action token + 1 個 stop token，並延長 attention_mask）、`_prepare_labels_for_action_prediction`、
+  `_regression_or_discrete_prediction`（**只留 `action_head is not None` 的 L1 分支**）。
+- 保留 predict_action 開頭「若結尾不是 token `29871` 就補空 token」的邏輯（與訓練輸入對齊），以及
+  `NUM_PATCHES = get_num_patches() * num_images_in_input`、`use_proprio` 時 `+1` 的計算。
+- **關鍵改動**：predict_action **回傳 normalized 動作（reshape 成 `(8, 7)`），不呼叫 `_unnormalize_actions`**；
+  反正規化交給 M3 的 `UnnormalizerProcessorStep`。`norm_stats` / `get_action_stats` /
+  `_unnormalize_actions` / discrete bins（`self.bins` / `bin_centers`）推論路徑都不會用到（可不移植或保留不接）。
+- 注意：這條路徑是「一次 forward 吃 `inputs_embeds` + 2D attention_mask，由 Llama 內部自建 causal mask」，
+  **沒有任何自訂 4D mask**；所謂「平行解碼」指一次插入全部 action placeholder token、再用 L1 head 讀
+  action 位置的 hidden states，不是 bidirectional 改寫。版本敏感點在 `inputs_embeds` / `position_ids=None` /
+  legacy `past_key_values` 的處理（見「主要風險 1」）。
+
+**M1.5 移植 action head + proprio projector**
+- `L1RegressionActionHead`（`action_heads.py:84-107`，含 `MLPResNet` / `MLPResNetBlock`）照搬；
+  其 `input_dim=llm_dim*ACTION_DIM`、輸出 reshape 成 `NUM_ACTIONS_CHUNK` 都改 import M1.0 的 `constants`。
+- `ProprioProjector(llm_dim, proprio_dim=8)`（`projectors.py:6-24`）照搬。
+- **砍掉**：`SinusoidalPositionalEncoding` / `NoisePredictionModel` / `DiffusionActionHead`（會拖
+  `diffusers`）與 `NoisyActionProjector`。
+
+**M1.6 權重載入（沿用 moojink；比照 `experiments/robot/openvla_utils.py`）**
+- 設一個包裝類別 `OpenvlaOftModel`，`__init__` 依序載入：
+  1. **base VLA**：先 `OpenVLAConfig.from_pretrained(repo)`，再
+     `OpenVLAForActionPrediction.from_pretrained(repo, config=cfg, torch_dtype=..., low_cpu_mem_usage=True)`，
+     **不要 `trust_remote_code=True`**（避免拉 hub 上那份會 import prismatic 的 modeling 檔），用移植版類別；
+     載入後 `vision_backbone.set_num_images_in_input(2)`。
+  2. **action head**：`hf_hub_download(repo, "action_head--150000_checkpoint.pt")` →
+     `load_component_state_dict`（去掉 DDP `module.` 前綴，見 `openvla_utils.py:230-250`）→
+     `L1RegressionActionHead(...).load_state_dict(...)`。
+  3. **proprio projector**：`hf_hub_download(repo, "proprio_projector--150000_checkpoint.pt")` → 同上 →
+     `ProprioProjector(llm_dim, 8).load_state_dict(...)`。
+  4. **dataset_statistics.json**：`hf_hub_download(repo, "dataset_statistics.json")` 先存下（**M3 才會**轉成
+     LeRobot `dataset_stats`；M1 因為不在模型內反正規化，不需用到）。
+- checkpoint 步數隨 repo 不同（spatial/object/10 = 150000、goal = 50000、混合 = 300000，見
+  `openvla_utils.py:497-503`）；M1 先寫死 spatial，或做 `repo → 檔名` 小對照表，不必通用化。
+
+**M1.7 對外推論介面**
+- 在 `OpenvlaOftModel` 上提供 `predict_action_chunk(pixel_values, input_ids, attention_mask, proprio)`，
+  內部呼叫 `base_vla.predict_action(..., action_head=self.action_head, proprio=proprio,
+  proprio_projector=self.proprio_projector, use_film=False, noisy_action_projector=None)`，把回傳的 `(8,7)`
+  轉成 torch `(1, 8, 7)` normalized 動作。**M4 的 policy 會呼叫這個**。
+- 原版 `predict_action` 回傳 numpy 且 batch 寫死 1（LIBERO 單環境逐步呼叫）；M1 沿用 batch=1 假設，
+  `(8,7)` → `unsqueeze(0)` → `(1,8,7)`。device/dtype 在 M1.7 統一轉好再傳（predict_action 內部會
+  `torch.Tensor(proprio)` 重建 tensor，留意 device/dtype）。
+
+- **DoD（Phase B 重構後須維持）**：
+  1. CPU 上 `OpenvlaOftModel(repo="moojink/openvla-7b-oft-finetuned-libero-spatial")` 能成功載入
+     base VLA + action head + proprio projector，過程 `sys.modules` 不含 `tensorflow` / `dlimp` / `diffusers`。
+  2. 對假輸入（`pixel_values` shape `(1, 12, 224, 224)` ＝ 2 影像 × 6 channel、合法 `input_ids` /
+     `attention_mask`、`proprio` shape `(1, 8)`）跑 `predict_action_chunk`，回傳 `(1, 8, 7)` normalized 動作、無例外。
+  3. 釘定可用 transformers 版本（先試 moojink fork `4.40.1`；若與 lerobot 安裝樹衝突，記錄實測可載
+     Llama-2 `inputs_embeds` 路徑的最低版本）。
 
 ### M2 — Config 類別 `OpenvlaOftConfig`
 - `@PreTrainedConfig.register_subclass("openvla_oft")`，欄位含：`pretrained_oft_repo`（moojink repo 或本地）、
@@ -166,8 +321,9 @@ policy plugin `lerobot_policy_openvla_oft`，載入 `moojink/openvla-7b-oft-fine
 - 細節解析：本 repo 的 `references/openvla-oft-程式碼解析.md`
 
 ## 主要風險
-1. **transformers 版本相容**：移植的 Llama-2 平行解碼路徑（`inputs_embeds` + 自訂 4D mask + legacy
-   past_key_values）對 transformers 版本敏感；stock 5.x 不相容。需釘可用版本並在 M1 實測。
+1. **transformers 版本相容**：移植的 Llama-2 平行解碼路徑吃 `inputs_embeds` + 2D attention_mask
+   （由 Llama 內部自建 causal mask，**無自訂 4D mask**），對 `inputs_embeds` / `position_ids=None` /
+   legacy `past_key_values` 的處理在不同 transformers 版本下行為不同；stock 5.x 不相容。需釘可用版本並在 M1 實測。
 2. **數值一致性**：影像前處理（lanczos resize、center crop 90%、SigLIP/DINOv2 channel stacking）、
    prompt 與結尾空 token 29871、QUANTILES↔BOUNDS_Q99 等任一不一致都會讓動作偏掉。M5 gate 專門擋這個。
 3. **GPU/模擬器可用性**：完整 LIBERO eval 需 LIBERO 模擬器 + 實務上需 CUDA；Mac 端先做 gate 與小樣本。

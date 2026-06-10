@@ -1,14 +1,15 @@
 # 進度追蹤（OpenVLA-OFT → LeRobot plugin）
 
 > 計畫全文見 `plan.md`。狀態圖示：⬜ 未開始 / 🟡 進行中 / ✅ 完成 / ⛔ 阻塞。
-> 最後更新：2026-06-10（建立追蹤表，尚未動工）。
+> 最後更新：2026-06-10（M1 改採兩階段：Phase A 先就地用 vendored `prismatic/`、砍不必要檔；
+> Phase B 後續漸進重構。尚未動工）。
 
 ## 里程碑總覽
 
 | 里程碑 | 內容 | 狀態 | DoD（完成定義） |
 |---|---|---|---|
 | M0 | 封裝與環境調和（build-system、修命名 bug、釘相依、editable 安裝） | ⬜ | plugin 被 `importlib.metadata` 看到且 `register_third_party_plugins()` 能 import；確認 installed lerobot 有 `LiberoProcessorStep` |
-| M1 | 移植 OFT 模型最小子集（沿用權重，去 prismatic 套件依賴） | ⬜ | CPU 上能載入並對假輸入吐出 `(1, 8, 7)` normalized 動作，不拖進 tensorflow/dlimp |
+| M1 | Phase A：就地用 vendored `prismatic/`（砍不必要檔/分支，修 import）；Phase B 後續漸進重構 | ⬜ | CPU 上能載入並對假輸入吐出 `(1, 8, 7)` normalized 動作，`sys.modules` 不含 tensorflow/dlimp/diffusers |
 | M2 | Config 類別 `OpenvlaOftConfig` | ⬜ | `--policy.type=openvla_oft` 可解析；features 與 normalization_mapping 正確 |
 | M3 | Processor pipeline + 統計轉換 | ⬜ | preprocessor 的 `pixel_values`/`input_ids`/normalized proprio 與原版 OFT processor 數值吻合 |
 | M4 | Policy 類別 `OpenvlaOftPolicy` + `__init__.py` 匯出 | ⬜ | `select_action`/`predict_action_chunk` 可跑；`forward` 暫 raise；類別命名可被 factory 推導 |
@@ -35,12 +36,25 @@ M0 ──┬── M1 ──┐
 - [x] 驗證 `register_third_party_plugins()` 能探索到 plugin
 - [ ] 確認 installed lerobot 有 `LiberoProcessorStep` 與 8 維 state 行為
 
-### M1 — 移植 OFT 模型最小子集 ⬜
-- [ ] 移植 `PrismaticVisionBackbone`（多影像）、`PrismaticProjector`
-- [ ] 移植平行解碼 forward / `predict_action`（去掉內建反正規化）
-- [ ] 移植 `L1RegressionActionHead`、`ProprioProjector`
-- [ ] 從 moojink repo 載入 base VLA + action head + proprio projector + dataset_statistics.json
-- [ ] 釘定可用 transformers 版本並實測 Llama-2 平行解碼路徑
+### M1 — Phase A：讓 vendored `prismatic/` 的推論路徑可用 ⬜
+
+> 策略已調整：直接沿用已 vendored 的 `prismatic/`，砍掉推論用不到的檔案與分支、修 import，先讓推論能跑；
+> 乾淨化（搬進 `model/`、砍死分支）留到 Phase B。詳細與程式碼定位見 `plan.md` 的 M1 段（M1.A0–M1.A4 + Phase B 參考）。
+
+Phase A（本輪）：
+- [x] M1.A0 砍推論用不到的子樹：`vla/datasets/`、`training/{strategies,materialize,metrics}`、
+      `models/{vlms,vlas,backbones,load,materialize,registry}`、`models/film_vit_wrapper.py`、
+      `vla/{materialize,action_tokenizer}`；保留 `extern/hf/*`、`models/{action_heads,projectors}`、
+      `vla/constants.py`、`training/train_utils.py`
+- [x] M1.A1 修保留檔的絕對 import：`from prismatic.…` → `from lerobot_policy_openvla_oft.prismatic.…`
+- [x] M1.A2 去 diffusers：`action_heads.py` 砍 `from diffusers…` 與 diffusion 類別，只留 `MLPResNet` + `L1RegressionActionHead`
+- [x] M1.A3 去 `vla/constants.py` 的 import 副作用：`sys.argv` 偵測 + print → 寫死 LIBERO 常數
+- [ ] M1.A4 `OpenvlaOftModel` 載入 base VLA（不 trust_remote_code）+ action head + proprio projector + 存 dataset_statistics.json；對外 `predict_action_chunk` 回 `(1, 8, 7)` normalized（batch=1）
+- [ ] 釘定可用 transformers 版本並實測 Llama-2 `inputs_embeds` 路徑（先試 fork 4.40.1）
+- [ ] DoD：CPU 載入成功且 `sys.modules` 不含 tensorflow/dlimp/diffusers；假輸入吐出 `(1, 8, 7)`
+
+Phase B（M5 gate 後，非阻塞）：
+- [ ] 把保留檔逐步搬進乾淨 `model/`、砍 `modeling_prismatic.py` 的 diffusion/FiLM 死分支、移除推論未用檔（藍圖見 `plan.md` M1.0–M1.7）
 
 ### M2 — Config 類別 ⬜
 - [ ] `@PreTrainedConfig.register_subclass("openvla_oft")` + `OpenvlaOftConfig`
@@ -83,9 +97,16 @@ M0 ──┬── M1 ──┐
 
 ## 風險與待決事項
 - transformers 版本相容性（移植的 Llama-2 平行解碼路徑對版本敏感，stock 5.x 不相容）。
-- 數值一致性（影像前處理、prompt/空 token、QUANTILES↔BOUNDS_Q99、平行解碼 mask）。
+- 數值一致性（影像前處理、prompt/空 token、QUANTILES↔BOUNDS_Q99、平行解碼一致性）。
 - 完整 LIBERO eval 需模擬器 + 實務上需 CUDA；Mac 端先做 gate 與小樣本。
 - lerobot 0.5.1（installed）vs 0.5.2（reference）版本落差待對齊。
 
 ## 變更紀錄
 - 2026-06-10：依「LeRobot-native 重寫 + 推論/LIBERO 評測」方向，建立 `plan.md` 與本追蹤表。
+- 2026-06-10：細化 M1 為 M1.0–M1.7 子步驟（含程式碼定位、要砍的分支、權重載入流程、DoD）；
+  更正「平行解碼有自訂 4D mask」的誤述（實為 `inputs_embeds` + 2D mask、Llama 內部 causal）。
+- 2026-06-10：完整上游 `prismatic` 已整包 vendored 進 `src/lerobot_policy_openvla_oft/prismatic/`，
+  M1 改採兩階段：**Phase A** 先就地沿用 vendored 套件（砍 `vla/datasets`、`training/strategies`、原生
+  載入路徑、FiLM 等不必要檔；修 36 處 `from prismatic.…` 絕對 import；去 `action_heads` 的 diffusers；
+  去 `constants.py` 的 `sys.argv`/print 副作用），先讓推論可跑；**Phase B** 通過 M5 gate 後再漸進重構成
+  乾淨 `model/`（原 M1.0–M1.7 改為 Phase B 藍圖）。
