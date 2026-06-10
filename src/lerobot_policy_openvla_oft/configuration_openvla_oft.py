@@ -1,12 +1,13 @@
-# configuration_my_policy.py
 from dataclasses import dataclass
+
 from lerobot.configs import PreTrainedConfig
 from lerobot.optim import AdamWConfig
 
-@PreTrainedConfig.register_subclass("my_policy")
+
+@PreTrainedConfig.register_subclass("openvla_oft")
 @dataclass
-class MyPolicyConfig(PreTrainedConfig):
-    """Configuration class for MyPolicy.
+class OpenvlaOftConfig(PreTrainedConfig):
+    """Configuration class for OpenvlaOftPolicy.
 
     Args:
         n_obs_steps: Number of observation steps to use as input
@@ -35,13 +36,15 @@ class MyPolicyConfig(PreTrainedConfig):
         Call this explicitly from your policy's __init__ — the base class does not.
         """
         if not self.image_features:
-            raise ValueError("MyPolicy requires at least one image feature.")
+            raise ValueError("OpenvlaOftPolicy requires at least one image feature.")
         if self.action_feature is None:
-            raise ValueError("MyPolicy requires 'action' in output_features.")
+            raise ValueError("OpenvlaOftPolicy requires 'action' in output_features.")
         raise NotImplementedError("Not implemented")
 
     def get_optimizer_preset(self) -> AdamWConfig:
-        return AdamWConfig(lr=self.optimizer_lr, weight_decay=self.optimizer_weight_decay)
+        return AdamWConfig(
+            lr=self.optimizer_lr, weight_decay=self.optimizer_weight_decay
+        )
 
     def get_scheduler_preset(self):
         """Return a LRSchedulerConfig from lerobot.optim, or None."""

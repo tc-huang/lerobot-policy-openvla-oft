@@ -1,16 +1,17 @@
-# modeling_my_policy.py
-import torch
 from typing import Any
 
+import torch
+
 from lerobot.policies import PreTrainedPolicy
-from lerobot.utils.constants import ACTION
-from .configuration_my_policy import MyPolicyConfig
 
-class MyPolicy(PreTrainedPolicy):
-    config_class = MyPolicyConfig  # must match the string in @register_subclass
-    name = "my_policy"
+from .configuration_openvla_oft import OpenvlaOftConfig
 
-    def __init__(self, config: MyPolicyConfig, dataset_stats: dict[str, Any] = None):
+
+class OpenvlaOftPolicy(PreTrainedPolicy):
+    config_class = OpenvlaOftConfig
+    name = "openvla_oft"
+
+    def __init__(self, config: OpenvlaOftConfig, dataset_stats: dict[str, Any] = None):
         super().__init__(config, dataset_stats)
         config.validate_features()  # not called automatically by the base class
         self.config = config
@@ -25,7 +26,9 @@ class MyPolicy(PreTrainedPolicy):
         """Return parameters to pass to the optimizer (e.g. with per-group lr/wd)."""
         return {"params": self.parameters()}
 
-    def predict_action_chunk(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
+    def predict_action_chunk(
+        self, batch: dict[str, torch.Tensor], **kwargs
+    ) -> torch.Tensor:
         """Return the full action chunk (B, chunk_size, action_dim) for the current observation."""
         # ...
         raise NotImplementedError("Not implemented")
@@ -35,7 +38,9 @@ class MyPolicy(PreTrainedPolicy):
         # ...
         raise NotImplementedError("Not implemented")
 
-    def forward(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict | None]:
+    def forward(
+        self, batch: dict[str, torch.Tensor]
+    ) -> tuple[torch.Tensor, dict | None]:
         """Compute the training loss.
 
         Returns `(loss, output_dict)`. `output_dict` may be `None`; everything in it must be
@@ -45,8 +50,6 @@ class MyPolicy(PreTrainedPolicy):
         timesteps padded because the episode ended before `horizon` steps; you
         can exclude those from your loss.
         """
-        actions = batch[ACTION]
-        action_is_pad = batch.get("action_is_pad")
         # ...
         # return loss, {"some_loss_component": some_loss_component.item()}
         raise NotImplementedError("Not implemented")
