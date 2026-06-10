@@ -9,7 +9,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "lerobot>=0.5.1",
+    "lerobot@git+https://github.com/huggingface/lerobot.git@507083249f9715b2ad3893fbe9757903055aa644",
     "torch>=2.10.0",
 ]
 

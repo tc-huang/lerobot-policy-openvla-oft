@@ -1,0 +1,9 @@
+[submodule "references/openvla"]
+	path = references/openvla
+	url = https://github.com/openvla/openvla.git
+[submodule "references/lerobot"]
+	path = references/lerobot
+	url = https://github.com/huggingface/lerobot.git
+[submodule "references/openvla-oft"]
+	path = references/openvla-oft
+	url = https://github.com/moojink/openvla-oft.git

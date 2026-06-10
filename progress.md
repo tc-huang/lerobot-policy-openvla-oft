@@ -28,11 +28,11 @@ M0 ──┬── M1 ──┐
 ## 詳細待辦
 
 ### M0 — 封裝與環境調和 ⬜
-- [ ] `pyproject.toml` 補 `[build-system]`（hatchling 或 setuptools）+ src layout 套件設定
+- [x] `pyproject.toml` 補 `[build-system]`（hatchling 或 setuptools）+ src layout 套件設定
 - [ ] plugin 相依加 `transformers`（moojink fork 4.40.1 或實測可用版本）、`timm==0.9.x`、`tokenizers`
-- [ ] 修 `src/lerobot_policy_openvla_oft/__init__.py` 壞掉的舊 stub 匯出
-- [ ] 對齊 lerobot 版本（0.5.1 → 0.5.2），`uv sync` + `uv pip install -e .`
-- [ ] 驗證 `register_third_party_plugins()` 能探索到 plugin
+- [x] 修 `src/lerobot_policy_openvla_oft/__init__.py` 壞掉的舊 stub 匯出
+- [x] 對齊 lerobot 版本（0.5.1 → 0.5.2），`uv sync` + `uv pip install -e .`
+- [x] 驗證 `register_third_party_plugins()` 能探索到 plugin
 - [ ] 確認 installed lerobot 有 `LiberoProcessorStep` 與 8 維 state 行為
 
 ### M1 — 移植 OFT 模型最小子集 ⬜
