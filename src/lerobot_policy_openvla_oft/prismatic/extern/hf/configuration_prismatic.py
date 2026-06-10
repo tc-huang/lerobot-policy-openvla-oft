@@ -69,7 +69,7 @@ VALID_LLM_BACKBONES = set(LLM_BACKBONE_TO_HF_PATH)
 # fmt: on
 
 
-class PrismaticConfig(PretrainedCo  nfig):
+class PrismaticConfig(PretrainedConfig):
     model_type: str = "prismatic"
     is_composition: bool = False
 
