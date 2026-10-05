@@ -35,6 +35,11 @@ class OpenVLAOFTConfig(PreTrainedConfig):
         normalization_mapping: Normalization mode per feature type. State and action
             are mapped from their [q01, q99] range to [-1, 1].
         image_size: Square input resolution of the vision backbone.
+        dtype: Weight dtype of the network; any dtype other than float32 also runs
+            the forward pass under autocast to that dtype.
+        proprio_projector_fp32: Keep the proprio projector weights in float32.
+        mask_padded_actions: Exclude chunk steps past the end of an episode from the
+            loss. When False, they are trained on the repeated last action.
         optimizer_lr: Peak learning rate.
         optimizer_weight_decay: AdamW weight decay.
         optimizer_grad_clip_norm: Gradient clipping norm; 0 disables clipping.
@@ -55,6 +60,11 @@ class OpenVLAOFTConfig(PreTrainedConfig):
 
     image_size: int = 224
 
+    dtype: str = "bfloat16"
+    proprio_projector_fp32: bool = True
+
+    mask_padded_actions: bool = False
+
     optimizer_lr: float = 5e-4
     optimizer_weight_decay: float = 1e-2
     optimizer_grad_clip_norm: float = 0.0
@@ -68,6 +78,8 @@ class OpenVLAOFTConfig(PreTrainedConfig):
             raise ValueError(
                 f"`n_action_steps` must be in [1, chunk_size={self.chunk_size}], got {self.n_action_steps}."
             )
+        if self.dtype not in ("bfloat16", "float32"):
+            raise ValueError(f"`dtype` must be 'bfloat16' or 'float32', got {self.dtype!r}.")
 
     def validate_features(self) -> None:
         if not self.image_features:

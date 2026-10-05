@@ -33,19 +33,23 @@ Sources are cited as follows:
 input/output contract, normalization, and training presets. Defaults follow
 the LIBERO recipe.
 
-| Setting                        | Default                    | Config field                                      | Source                                                                                                        |
-| ------------------------------ | -------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Action chunk size              | 8                          | `chunk_size`                                      | Paper §V-A, Table IV; Repo `prismatic/vla/constants.py:27`                                                    |
-| Actions executed per chunk     | 8 (whole chunk, open-loop) | `n_action_steps`                                  | Paper §V-A, Table IV; Repo `experiments/robot/libero/run_libero_eval.py:100`                                  |
-| Observation history            | None (single step)         | `n_obs_steps`, `observation_delta_indices`        | Paper Table IV                                                                                                |
-| State and action normalization | `[q01, q99]` → `[-1, 1]`   | `normalization_mapping` (`QUANTILES`)             | Repo `prismatic/vla/constants.py:30`; the paper only states that actions are normalized to `[-1, 1]` (App. D) |
-| Image normalization            | None                       | `normalization_mapping` (`IDENTITY`)              | This port: each vision backbone applies its own normalization                                                 |
-| Optimizer                      | AdamW                      | `get_optimizer_preset()`                          | Repo `vla-scripts/finetune.py:935`; not stated in the paper                                                   |
-| Learning rate                  | 5e-4                       | `optimizer_lr`                                    | Paper Table IV; Repo `vla-scripts/finetune.py:89`                                                             |
-| Weight decay                   | 0.01                       | `optimizer_weight_decay`                          | Repo: PyTorch AdamW default, since `vla-scripts/finetune.py:935` does not set it; not stated in the paper     |
-| Gradient clipping              | None                       | `optimizer_grad_clip_norm` (0)                    | Repo: `vla-scripts/finetune.py` never clips; not stated in the paper                                          |
-| Learning rate decay            | ×0.1 after 100K steps      | `scheduler_decay_steps`, `scheduler_decay_factor` | Paper App. D, Table IV; Repo `vla-scripts/finetune.py:91`, `:941-944`                                         |
-| Learning rate warmup           | None                       | (not supported)                                   | Repo `vla-scripts/finetune.py:90`; not stated in the paper                                                    |
+| Setting                        | Default                                | Config field                                      | Source                                                                                                           |
+| ------------------------------ | -------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Action chunk size              | 8                                      | `chunk_size`                                      | Paper §V-A, Table IV; Repo `prismatic/vla/constants.py:27`                                                       |
+| Actions executed per chunk     | 8 (whole chunk, open-loop)             | `n_action_steps`                                  | Paper §V-A, Table IV; Repo `experiments/robot/libero/run_libero_eval.py:100`                                     |
+| Observation history            | None (single step)                     | `n_obs_steps`, `observation_delta_indices`        | Paper Table IV                                                                                                   |
+| State and action normalization | `[q01, q99]` → `[-1, 1]`               | `normalization_mapping` (`QUANTILES`)             | Repo `prismatic/vla/constants.py:30`; the paper only states that actions are normalized to `[-1, 1]` (App. D)    |
+| Image normalization            | None                                   | `normalization_mapping` (`IDENTITY`)              | This port: each vision backbone applies its own normalization                                                    |
+| Optimizer                      | AdamW                                  | `get_optimizer_preset()`                          | Repo `vla-scripts/finetune.py:935`; not stated in the paper                                                      |
+| Learning rate                  | 5e-4                                   | `optimizer_lr`                                    | Paper Table IV; Repo `vla-scripts/finetune.py:89`                                                                |
+| Weight decay                   | 0.01                                   | `optimizer_weight_decay`                          | Repo: PyTorch AdamW default, since `vla-scripts/finetune.py:935` does not set it; not stated in the paper        |
+| Gradient clipping              | None                                   | `optimizer_grad_clip_norm` (0)                    | Repo: `vla-scripts/finetune.py` never clips; not stated in the paper                                             |
+| Learning rate decay            | ×0.1 after 100K steps                  | `scheduler_decay_steps`, `scheduler_decay_factor` | Paper App. D, Table IV; Repo `vla-scripts/finetune.py:91`, `:941-944`                                            |
+| Learning rate warmup           | None                                   | (not supported)                                   | Repo `vla-scripts/finetune.py:90`; not stated in the paper                                                       |
+| Weight dtype                   | bfloat16                               | `dtype`                                           | Repo `vla-scripts/finetune.py:837` (model), `:895` (action head); not stated in the paper                        |
+| Proprio projector weights      | float32                                | `proprio_projector_fp32`                          | Repo `vla-scripts/finetune.py:878-884` (no `to_bf16`); not stated in the paper                                   |
+| Mixed precision                | Forward under bfloat16 autocast        | (follows `dtype`)                                 | Repo `vla-scripts/finetune.py:327`; not stated in the paper                                                      |
+| Padded chunk steps in the loss | Included, as copies of the last action | `mask_padded_actions` (False)                     | Repo `prismatic/vla/datasets/rlds/traj_transforms.py:44`, `vla-scripts/finetune.py:390`; not stated in the paper |
 
 The original implementation selects the chunk size and normalization scheme at
 import time by inspecting the command line (`prismatic/vla/constants.py`);
@@ -276,3 +280,55 @@ Differences from the original implementation (this port):
 - **No global chunk size.** The original reshapes with the module-level
   `NUM_ACTIONS_CHUNK` constant; this head infers the chunk length from its
   input.
+
+### 7. Policy
+
+`OpenVLAOFTPolicy` (`modeling_openvla_oft.py`) connects `OpenVLAOFT` to
+LeRobot's `PreTrainedPolicy` interface, so `lerobot-train` and `lerobot-eval`
+can use it through `--policy.type openvla_oft`. The responsibilities are split
+as follows:
+
+| Layer           | Responsibility                                                                                                                         |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Processor (§8)  | Prompt template and tokenization, image resizing and cropping, state and action normalization, action unnormalization                  |
+| Policy (§7)     | Building the network from the configuration, precision, turning LeRobot batches into network inputs, the L1 loss, and the action queue |
+| Network (§2–§6) | Mapping tokens, images, and state to a normalized action chunk                                                                         |
+
+The policy reads these batch keys, all produced by the preprocessor:
+
+| Key                                   | Shape                         | Content                                                           |
+| ------------------------------------- | ----------------------------- | ----------------------------------------------------------------- |
+| `observation.images.*`                | `(B, 3, H, W)` per camera     | Images in `[0, 1]`, stacked in `config.image_features` order      |
+| `observation.state`                   | `(B, state_dim)`              | Normalized robot state (optional)                                 |
+| `observation.language.tokens`         | `(B, L)`                      | Right-padded prompt token ids starting with BOS                   |
+| `observation.language.attention_mask` | `(B, L)`                      | 1 for prompt tokens, 0 for padding                                |
+| `action`                              | `(B, chunk_size, action_dim)` | Normalized target actions (training only)                         |
+| `action_is_pad`                       | `(B, chunk_size)`             | Steps past the episode end (used when `mask_padded_actions=True`) |
+
+| Behavior         | Value                                                                               | Config field                      | Source                                                                                   |
+| ---------------- | ----------------------------------------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------- |
+| Training loss    | Mean L1 over the normalized action chunk                                            | `mask_padded_actions`             | Paper §IV-B, App. D; Repo `vla-scripts/finetune.py:390`                                  |
+| Action execution | Predict a chunk, then return its first `n_action_steps` actions one per call        | `n_action_steps`                  | Paper §V-A, Table IV; Repo `experiments/robot/libero/run_libero_eval.py:306`, `:328-344` |
+| Precision        | Weights in `dtype`, proprio projector optionally in float32, forward under autocast | `dtype`, `proprio_projector_fp32` | Repo, see §1                                                                             |
+| Proprio input    | Used when the dataset has `observation.state`                                       | (from dataset features)           | Paper Table IV                                                                           |
+
+Notes:
+
+- **Precision at inference.** The original trains under autocast but runs
+  evaluation in pure bfloat16 without autocast, converting the proprio
+  projector and action head to bfloat16
+  (`experiments/robot/openvla_utils.py:410`, `:492`). This port uses the
+  training setup in both cases. Under autocast, float32 proprio weights are
+  cast to bfloat16 before each matrix multiply, so they compute the same as
+  bfloat16 weights; however, autocast runs some operations, such as
+  LayerNorm, in float32, so evaluation numerics can differ slightly from the
+  original.
+- **LeRobot `use_amp`.** Leave `--policy.use_amp` disabled. The policy already
+  applies autocast based on `dtype`; enabling `use_amp` would add a second
+  mixed-precision layer through `accelerate`.
+- **Loading memory.** The network is built in float32 and then cast to
+  `dtype`, so constructing the full model briefly needs about 30 GB of host
+  memory. This is revisited together with checkpoint conversion.
+- **Testing.** `build_model` is the only place that knows the full-size
+  architecture. Tests replace it with a tiny network, so the configuration
+  contains no test-only fields.

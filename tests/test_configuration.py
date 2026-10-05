@@ -67,3 +67,8 @@ def test_scheduler_preset_decays_learning_rate_once():
         scheduler.step()
 
     assert lrs == pytest.approx([5e-4] * 3 + [5e-5] * 3)
+
+
+def test_rejects_unsupported_dtype():
+    with pytest.raises(ValueError, match="dtype"):
+        OpenVLAOFTConfig(dtype="float16")

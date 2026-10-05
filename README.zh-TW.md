@@ -30,19 +30,23 @@ follower 手臂上。
 `OpenVLAOFTConfig` 註冊 policy type `openvla_oft`，並定義輸入與輸出的規格、正規化
 方式，以及訓練的預設設定。預設值沿用 LIBERO 的設定。
 
-| 設定                        | 預設值                     | Config 欄位                                       | 來源                                                                                     |
-| --------------------------- | -------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Action chunk 大小           | 8                          | `chunk_size`                                      | 論文 §V-A、Table IV；原 repo `prismatic/vla/constants.py:27`                             |
-| 每個 chunk 執行的 action 數 | 8（整個 chunk，open-loop） | `n_action_steps`                                  | 論文 §V-A、Table IV；原 repo `experiments/robot/libero/run_libero_eval.py:100`           |
-| 觀測歷史                    | 無（只用當下這一步）       | `n_obs_steps`、`observation_delta_indices`        | 論文 Table IV                                                                            |
-| State 與 action 正規化      | `[q01, q99]` → `[-1, 1]`   | `normalization_mapping`（`QUANTILES`）            | 原 repo `prismatic/vla/constants.py:30`；論文只提到 action 正規化到 `[-1, 1]`（App. D）  |
-| 影像正規化                  | 無                         | `normalization_mapping`（`IDENTITY`）             | 本專案：每個 vision backbone 會自行正規化                                                |
-| Optimizer                   | AdamW                      | `get_optimizer_preset()`                          | 原 repo `vla-scripts/finetune.py:935`；論文未提及                                        |
-| Learning rate               | 5e-4                       | `optimizer_lr`                                    | 論文 Table IV；原 repo `vla-scripts/finetune.py:89`                                      |
-| Weight decay                | 0.01                       | `optimizer_weight_decay`                          | 原 repo：`vla-scripts/finetune.py:935` 未設定，因此是 PyTorch AdamW 的預設值；論文未提及 |
-| Gradient clipping           | 無                         | `optimizer_grad_clip_norm`（0）                   | 原 repo：`vla-scripts/finetune.py` 沒有做 clipping；論文未提及                           |
-| Learning rate 衰減          | 100K 步後 ×0.1             | `scheduler_decay_steps`、`scheduler_decay_factor` | 論文 App. D、Table IV；原 repo `vla-scripts/finetune.py:91`、`:941-944`                  |
-| Learning rate warmup        | 無                         | （不支援）                                        | 原 repo `vla-scripts/finetune.py:90`；論文未提及                                         |
+| 設定                           | 預設值                              | Config 欄位                                       | 來源                                                                                                   |
+| ------------------------------ | ----------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Action chunk 大小              | 8                                   | `chunk_size`                                      | 論文 §V-A、Table IV；原 repo `prismatic/vla/constants.py:27`                                           |
+| 每個 chunk 執行的 action 數    | 8（整個 chunk，open-loop）          | `n_action_steps`                                  | 論文 §V-A、Table IV；原 repo `experiments/robot/libero/run_libero_eval.py:100`                         |
+| 觀測歷史                       | 無（只用當下這一步）                | `n_obs_steps`、`observation_delta_indices`        | 論文 Table IV                                                                                          |
+| State 與 action 正規化         | `[q01, q99]` → `[-1, 1]`            | `normalization_mapping`（`QUANTILES`）            | 原 repo `prismatic/vla/constants.py:30`；論文只提到 action 正規化到 `[-1, 1]`（App. D）                |
+| 影像正規化                     | 無                                  | `normalization_mapping`（`IDENTITY`）             | 本專案：每個 vision backbone 會自行正規化                                                              |
+| Optimizer                      | AdamW                               | `get_optimizer_preset()`                          | 原 repo `vla-scripts/finetune.py:935`；論文未提及                                                      |
+| Learning rate                  | 5e-4                                | `optimizer_lr`                                    | 論文 Table IV；原 repo `vla-scripts/finetune.py:89`                                                    |
+| Weight decay                   | 0.01                                | `optimizer_weight_decay`                          | 原 repo：`vla-scripts/finetune.py:935` 未設定，因此是 PyTorch AdamW 的預設值；論文未提及               |
+| Gradient clipping              | 無                                  | `optimizer_grad_clip_norm`（0）                   | 原 repo：`vla-scripts/finetune.py` 沒有做 clipping；論文未提及                                         |
+| Learning rate 衰減             | 100K 步後 ×0.1                      | `scheduler_decay_steps`、`scheduler_decay_factor` | 論文 App. D、Table IV；原 repo `vla-scripts/finetune.py:91`、`:941-944`                                |
+| Learning rate warmup           | 無                                  | （不支援）                                        | 原 repo `vla-scripts/finetune.py:90`；論文未提及                                                       |
+| 權重 dtype                     | bfloat16                            | `dtype`                                           | 原 repo `vla-scripts/finetune.py:837`（模型）、`:895`（action head）；論文未提及                       |
+| Proprio projector 權重         | float32                             | `proprio_projector_fp32`                          | 原 repo `vla-scripts/finetune.py:878-884`（未設定 `to_bf16`）；論文未提及                              |
+| 混合精度                       | Forward 在 bfloat16 autocast 下執行 | （跟隨 `dtype`）                                  | 原 repo `vla-scripts/finetune.py:327`；論文未提及                                                      |
+| 補值的 chunk 步驟是否計入 loss | 計入，其值為最後一個 action 的複本  | `mask_padded_actions`（False）                    | 原 repo `prismatic/vla/datasets/rlds/traj_transforms.py:44`、`vla-scripts/finetune.py:390`；論文未提及 |
 
 原始實作在 import 時透過檢查命令列參數來決定 chunk 大小與正規化方式
 （`prismatic/vla/constants.py`）；本專案則將它們明確定義為 configuration 欄位。
@@ -246,3 +250,48 @@ LayerNorm → Linear(7·4096 → 4096) → ReLU
   `blocks.N`、`output_norm`、`output_proj`。Checkpoint 的 key 會在轉換時重新命名。
 - **不依賴全域的 chunk 大小。** 原始實作用模組層級的常數 `NUM_ACTIONS_CHUNK` 做
   reshape；本 head 則從輸入推得 chunk 長度。
+
+### 7. Policy
+
+`OpenVLAOFTPolicy`（`modeling_openvla_oft.py`）把 `OpenVLAOFT` 接上 LeRobot 的
+`PreTrainedPolicy` 介面，讓 `lerobot-train` 與 `lerobot-eval` 可以透過
+`--policy.type openvla_oft` 使用。職責劃分如下：
+
+| 層              | 職責                                                                                      |
+| --------------- | ----------------------------------------------------------------------------------------- |
+| Processor（§8） | Prompt 模板與 tokenize、影像 resize 與 crop、state 與 action 正規化、action 反正規化      |
+| Policy（§7）    | 依 configuration 建立網路、精度設定、把 LeRobot batch 轉成網路輸入、L1 loss、action queue |
+| 網路（§2–§6）   | 把 token、影像與 state 映射成正規化的 action chunk                                        |
+
+Policy 讀取以下 batch key，全部由 preprocessor 產生：
+
+| Key                                   | Shape                         | 內容                                                         |
+| ------------------------------------- | ----------------------------- | ------------------------------------------------------------ |
+| `observation.images.*`                | 每台相機 `(B, 3, H, W)`       | 值域 `[0, 1]` 的影像，依 `config.image_features` 的順序疊起  |
+| `observation.state`                   | `(B, state_dim)`              | 正規化後的機器人狀態（可省略）                               |
+| `observation.language.tokens`         | `(B, L)`                      | 右側 padding、以 BOS 開頭的 prompt token id                  |
+| `observation.language.attention_mask` | `(B, L)`                      | prompt token 為 1，padding 為 0                              |
+| `action`                              | `(B, chunk_size, action_dim)` | 正規化後的目標 action（僅訓練時）                            |
+| `action_is_pad`                       | `(B, chunk_size)`             | 超出 episode 結尾的步驟（`mask_padded_actions=True` 時使用） |
+
+| 行為            | 值                                                                                 | Config 欄位                       | 來源                                                                                       |
+| --------------- | ---------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------ |
+| 訓練 loss       | 正規化 action chunk 上的平均 L1                                                    | `mask_padded_actions`             | 論文 §IV-B、App. D；原 repo `vla-scripts/finetune.py:390`                                  |
+| Action 執行方式 | 預測一個 chunk，之後每次呼叫依序回傳前 `n_action_steps` 個 action                  | `n_action_steps`                  | 論文 §V-A、Table IV；原 repo `experiments/robot/libero/run_libero_eval.py:306`、`:328-344` |
+| 精度            | 權重使用 `dtype`，proprio projector 可選擇保留 float32，forward 在 autocast 下執行 | `dtype`、`proprio_projector_fp32` | 原 repo，見 §1                                                                             |
+| Proprio 輸入    | Dataset 有 `observation.state` 時使用                                              | （由 dataset features 決定）      | 論文 Table IV                                                                              |
+
+補充說明：
+
+- **推論時的精度。** 原始實作訓練時使用 autocast，但評估時以純 bfloat16 執行、不
+  使用 autocast，並把 proprio projector 與 action head 轉成 bfloat16
+  （`experiments/robot/openvla_utils.py:410`、`:492`）。本專案在訓練與推論都採用
+  訓練時的設定。在 autocast 下，float32 的 proprio 權重會在每次矩陣乘法前轉成
+  bfloat16，因此計算結果與 bfloat16 權重相同；不過 autocast 會讓 LayerNorm 等部分
+  運算以 float32 執行，因此評估時的數值可能與原始實作略有差異。
+- **LeRobot 的 `use_amp`。** 請保持 `--policy.use_amp` 關閉。Policy 已經依
+  `dtype` 套用 autocast；開啟 `use_amp` 會透過 `accelerate` 再疊加一層混合精度。
+- **載入時的記憶體。** 網路先以 float32 建立再轉成 `dtype`，因此建立完整模型時會
+  短暫需要約 30 GB 的主機記憶體。這點會在 checkpoint 轉換時一併處理。
+- **測試。** `build_model` 是唯一知道完整尺寸架構的地方。Test 會把它換成小型網
+  路，因此 configuration 中沒有只為測試而設的欄位。
