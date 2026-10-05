@@ -516,3 +516,10 @@ Key 對應：
 - **Test。** `tests/test_convert_checkpoint.py` 從小型模型產生釋出格式的
   state dict，再轉換回來，要求每個值完全相同；另外也測試未知 key 與缺少 key 的失
   敗情況。
+- **實際轉換。** 在 Apple M5 Max 上以 CPU 轉換 `libero-spatial` 約需 100 秒，主機
+  記憶體峰值為 38 GB。抽查的 8 個 tensor（DINOv2、SigLIP、vision projector、
+  Llama-2、action head、proprio projector）與釋出檔案逐位元相同，包括 float32 的
+  proprio projector。以 `from_pretrained` 重新載入後，policy 在 MPS 上以 5.7 秒預
+  測出數值有限、shape 為 `(1, 8, 7)` 的 action chunk。
+
+釋出的 `.pt` 檔是從 CUDA tensor 存下來的，因此腳本以 `map_location="cpu"` 載入。

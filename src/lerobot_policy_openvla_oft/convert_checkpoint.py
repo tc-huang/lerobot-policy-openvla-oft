@@ -146,8 +146,8 @@ def convert(repo_id: str, output_dir: Path, revision: str | None = None) -> None
     load_released_weights(
         policy.model,
         vla,
-        torch.load(action_head, weights_only=True),
-        torch.load(proprio_projector, weights_only=True),
+        torch.load(action_head, map_location="cpu", weights_only=True),
+        torch.load(proprio_projector, map_location="cpu", weights_only=True),
     )
 
     preprocessor, postprocessor = make_openvla_oft_pre_post_processors(config, stats)

@@ -573,3 +573,12 @@ How this is verified:
 - **Tests.** `tests/test_convert_checkpoint.py` builds a released-format state
   dict from a tiny model, converts it back, and requires every value to be
   identical, plus failure cases for unknown and missing keys.
+- **Real conversion.** `libero-spatial` converted on an Apple M5 Max in about
+  100 seconds on the CPU, with a peak of 38 GB of host memory. Eight spot-checked
+  tensors (DINOv2, SigLIP, vision projector, Llama-2, action head, proprio
+  projector) are bit-identical to the released files, including the float32
+  proprio projector. Reloaded with `from_pretrained`, the policy predicts a
+  finite `(1, 8, 7)` action chunk in 5.7 seconds on MPS.
+
+The released `.pt` files were saved from CUDA tensors, so the script loads them
+with `map_location="cpu"`.
