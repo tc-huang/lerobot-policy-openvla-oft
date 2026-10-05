@@ -50,6 +50,10 @@ class BidirectionalLlama(nn.Module):
     def hidden_size(self) -> int:
         return self.model.config.hidden_size
 
+    @property
+    def eos_token_id(self) -> int:
+        return self.model.config.eos_token_id
+
     def embed(self, input_ids: Tensor) -> Tensor:
         """Maps token ids (B, L) to embeddings (B, L, hidden_size)."""
         return self.model.embed_tokens(input_ids)

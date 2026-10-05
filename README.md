@@ -186,3 +186,54 @@ Differences from the original implementation (this port):
   computes vocabulary logits that OpenVLA-OFT never uses. This port uses
   `LlamaModel`, which removes 131M parameters that would receive no gradient.
   The `lm_head` weight is dropped during conversion.
+
+### 5. Sequence layout and parallel decoding
+
+`OpenVLAOFT` (`model.py`) assembles the components above into one network that
+predicts a whole action chunk in a single forward pass. It builds the
+following input sequence for the language model:
+
+```text
+[BOS] [image patches] [proprio] [prompt] [action placeholders] [EOS] [padding]
+  1     256 × images      1      varies        K × D = 56         1
+```
+
+The action placeholders are zero vectors, one per action dimension per chunk
+step, so they differ only by their rotary position. Bidirectional attention
+(§4) lets every placeholder read the images, the state, the prompt, and the
+other placeholders. The model returns the final hidden states that decode the
+56 action values; §6 maps them to actions.
+
+| Setting                         | Value                                                                             | Config field                       | Source                                                                                                                                                                               |
+| ------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Image patches and proprio token | Inserted right after BOS, proprio after the patches                               | (fixed)                            | Paper App. A; Repo `prismatic/extern/hf/modeling_prismatic.py:458`, `:475`                                                                                                           |
+| Number of action placeholders   | `chunk_size × action_dim` (8 × 7 = 56 for LIBERO)                                 | `chunk_size`, action feature shape | Paper §IV-B; Repo `prismatic/extern/hf/modeling_prismatic.py:737`                                                                                                                    |
+| Placeholder embeddings          | Zero vectors                                                                      | (fixed)                            | Paper §IV-B, App. B.1 ("empty action embeddings that differ only in their positional encoding"); Repo `prismatic/extern/hf/modeling_prismatic.py:621` (training), `:891` (inference) |
+| EOS after the placeholders      | Llama `</s>` (id 2)                                                               | (fixed)                            | Repo: training prompt format `prismatic/models/backbones/llm/prompting/base_prompter.py:37`, inference `prismatic/extern/hf/modeling_prismatic.py:742-743`; not stated in the paper  |
+| Hidden-state readout            | Shifted by one: from the last prompt token through the second-to-last placeholder | (fixed)                            | Repo: training `vla-scripts/finetune.py:343`, `:377-381`, inference `prismatic/extern/hf/modeling_prismatic.py:914`; not stated in the paper                                         |
+| Padding                         | After EOS                                                                         | (fixed)                            | Repo `prismatic/util/data_utils.py:113`                                                                                                                                              |
+
+The shifted readout is inherited from autoregressive OpenVLA, where the hidden
+state at each position predicts the next token. The original training script
+aligns hidden states with `labels[:, 1:]`, so the hidden state of the token
+right before each action placeholder decodes that action value. The hidden
+state of the last placeholder is never read. The released checkpoints were
+trained this way, so this port keeps the same readout.
+
+Differences from the original implementation (this port):
+
+- **Placeholders without dummy tokens.** The original puts real action token
+  ids (training) or the dummy id 1 (inference) into `input_ids`, embeds them,
+  then multiplies by a mask derived from the labels to zero them out. This
+  port inserts zero vectors directly, so it needs neither action tokens nor
+  labels.
+- **Batched prompts of different lengths.** The prompt arrives right-padded;
+  the model appends the placeholders and EOS directly after each prompt and
+  moves the padding to the end with a stable sort. Every sample therefore has
+  the same layout and positions as when run alone, which the tests check.
+  The original inference code only supports a batch size of 1
+  (`prismatic/extern/hf/modeling_prismatic.py:747`).
+- **Dependency injection.** `OpenVLAOFT` receives the vision backbone and the
+  language model as constructed modules and only builds the projectors
+  itself. The policy (§7) decides how to build the components from the
+  configuration, and tests can pass tiny versions.

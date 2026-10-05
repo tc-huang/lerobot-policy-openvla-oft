@@ -1,20 +1,12 @@
 import pytest
 import torch
+from tiny_models import TINY_LLAMA
 
 from lerobot_policy_openvla_oft.language_model import (
     BidirectionalLlama,
     bidirectional_attention_mask,
     openvla_llama_config,
 )
-
-TINY_LLAMA = {
-    "vocab_size": 64,
-    "pad_token_id": 0,
-    "hidden_size": 16,
-    "intermediate_size": 32,
-    "num_hidden_layers": 2,
-    "num_attention_heads": 2,
-}
 
 
 @pytest.fixture(params=["sdpa", "eager"])

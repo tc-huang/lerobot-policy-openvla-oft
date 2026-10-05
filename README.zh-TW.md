@@ -165,3 +165,47 @@ repository 需要申請存取，這裡是透過公開鏡像
 - **不使用 language-model head。** 原始實作保留 `LlamaForCausalLM`，會計算
   OpenVLA-OFT 根本用不到的詞彙 logits。本專案改用 `LlamaModel`，省去 131M 個不會
   收到 gradient 的參數。`lm_head` 的權重會在轉換時捨棄。
+
+### 5. 序列排列與 parallel decoding
+
+`OpenVLAOFT`（`model.py`）把前面的元件組成一個網路，在一次 forward pass 中預測整
+個 action chunk。它為 language model 建立如下的輸入序列：
+
+```text
+[BOS] [影像 patch] [proprio] [prompt] [action placeholder] [EOS] [padding]
+  1    256 × 影像數     1      不定        K × D = 56          1
+```
+
+Action placeholder 是零向量，每個 chunk 步驟的每個 action 維度各一個，因此彼此只
+差在 rotary position。Bidirectional attention（§4）讓每個 placeholder 都能讀到影
+像、state、prompt，以及其他 placeholder。模型回傳用來解碼 56 個 action 值的最後
+一層 hidden state，再由 §6 轉換成 action。
+
+| 設定                        | 值                                                         | Config 欄位                           | 來源                                                                                                                                                                               |
+| --------------------------- | ---------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 影像 patch 與 proprio token | 緊接在 BOS 之後插入，proprio 位於 patch 之後               | （固定）                              | 論文 App. A；原 repo `prismatic/extern/hf/modeling_prismatic.py:458`、`:475`                                                                                                       |
+| Action placeholder 數量     | `chunk_size × action_dim`（LIBERO 為 8 × 7 = 56）          | `chunk_size`、action feature 的 shape | 論文 §IV-B；原 repo `prismatic/extern/hf/modeling_prismatic.py:737`                                                                                                                |
+| Placeholder embedding       | 零向量                                                     | （固定）                              | 論文 §IV-B、App. B.1（「empty action embeddings that differ only in their positional encoding」）；原 repo `prismatic/extern/hf/modeling_prismatic.py:621`（訓練）、`:891`（推論） |
+| Placeholder 之後的 EOS      | Llama 的 `</s>`（id 2）                                    | （固定）                              | 原 repo：訓練時的 prompt 格式 `prismatic/models/backbones/llm/prompting/base_prompter.py:37`、推論 `prismatic/extern/hf/modeling_prismatic.py:742-743`；論文未提及                 |
+| 讀取 hidden state 的位置    | 位移一格：從最後一個 prompt token 到倒數第二個 placeholder | （固定）                              | 原 repo：訓練 `vla-scripts/finetune.py:343`、`:377-381`，推論 `prismatic/extern/hf/modeling_prismatic.py:914`；論文未提及                                                          |
+| Padding                     | 位於 EOS 之後                                              | （固定）                              | 原 repo `prismatic/util/data_utils.py:113`                                                                                                                                         |
+
+位移一格的讀取方式源自自回歸的 OpenVLA：每個位置的 hidden state 用來預測下一個
+token。原始訓練腳本把 hidden state 與 `labels[:, 1:]` 對齊，因此每個 action
+placeholder 的值，是由它前一個 token 的 hidden state 解碼而來；最後一個
+placeholder 的 hidden state 則從未被讀取。釋出的 checkpoint 就是這樣訓練的，因此
+本專案保留相同的讀取方式。
+
+與原始實作的差異（本專案）：
+
+- **不使用假 token 產生 placeholder。** 原始實作在 `input_ids` 中放入真正的
+  action token id（訓練）或假的 id 1（推論），embed 之後再乘上由 labels 推導出的
+  mask 把它們歸零。本專案直接插入零向量，因此不需要 action token，也不需要
+  labels。
+- **批次中 prompt 長度可以不同。** Prompt 以右側 padding 的形式傳入；模型把
+  placeholder 與 EOS 直接接在每個 prompt 後面，再用 stable sort 把 padding 移到最
+  後。因此每個樣本的排列與位置都和單獨執行時相同，test 會驗證這一點。原始的推論
+  程式只支援 batch size 1（`prismatic/extern/hf/modeling_prismatic.py:747`）。
+- **Dependency injection。** `OpenVLAOFT` 接收已經建立好的 vision backbone 與
+  language model，只自行建立 projector。如何依 configuration 建立這些元件由
+  policy（§7）決定，test 也因此可以傳入小型版本。
