@@ -130,3 +130,38 @@ Vision projector 屬於預訓練的 OpenVLA 模型；proprio projector 則是 Op
   保留 3 層版本。
 - **Proprio token 的 shape。** `ProprioProjector` 直接回傳 `(B, 1, llm_dim)`，也就
   是可以直接插入序列的 token，而不是把 reshape 留給呼叫端處理。
+
+### 4. Language model 與 bidirectional attention
+
+`BidirectionalLlama`（`language_model.py`）包裝 `transformers.LlamaModel`，並以
+雙向 self-attention 執行。原本自回歸的 OpenVLA 使用 causal mask，每個 action
+token 只能看到它前面的 token。Parallel decoding 則需要每個 action 位置都看得到其
+他所有位置，因此把 causal mask 換成只遮住 padding token 的 mask。
+
+| 設定            | 值                                                                      | Config 欄位 | 來源                                                                                                                                                                               |
+| --------------- | ----------------------------------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language model  | Llama-2 7B：32 層、hidden size 4096、32 個 head、MLP 大小 11008、SiLU   | （固定）    | 論文 App. A；原 repo 釋出的 `config.json` 中的 `llm_backbone_id: llama2-7b-pure`                                                                                                   |
+| 詞彙表          | 32064（Llama-2 的 32000 個 token + 1 個 pad token，再補齊到 64 的倍數） | （固定）    | 原 repo：釋出的 `config.json` 中的 `text_config.vocab_size`、`pad_to_multiple_of`                                                                                                  |
+| Pad token id    | 32000                                                                   | （固定）    | 原 repo：釋出的 `config.json` 中的 `pad_token_id`                                                                                                                                  |
+| RMSNorm epsilon | 1e-6                                                                    | （固定）    | 原 repo：`LlamaConfig` 的預設值，因為 `prismatic/extern/hf/configuration_prismatic.py:119-123` 只設定詞彙表與 pad token；論文未提及                                                |
+| Attention       | 雙向；只遮住 padding 的 key                                             | （固定）    | 論文 App. A（OFT 修改 3）、App. B.1；原 repo `pyproject.toml:50` 與 transformers fork 的 commit [`bc339d9`](https://github.com/moojink/transformers-openvla-oft/commit/bc339d9ad7) |
+| 輸出            | 最後一個 RMSNorm 之後的 hidden state；不使用 language-model head        | （固定）    | 論文 App. A（OFT 修改 4）；原 repo `prismatic/extern/hf/modeling_prismatic.py:913`（`hidden_states[-1]`）                                                                          |
+| Attention 後端  | PyTorch SDPA                                                            | （固定）    | 本專案；fork 修改的也是 SDPA 路徑                                                                                                                                                  |
+
+RMSNorm epsilon 為 1e-6，與 Meta 的 Llama-2 7B 設定中的 1e-5 不同（由於 Meta 的
+repository 需要申請存取，這裡是透過公開鏡像
+[`NousResearch/Llama-2-7b-hf`](https://huggingface.co/NousResearch/Llama-2-7b-hf/blob/main/config.json)
+確認）。釋出的 OpenVLA-OFT checkpoint 是以 1e-6 fine-tune 的，因此本專案沿用 1e-6。
+
+與原始實作的差異（本專案）：
+
+- **不使用 transformers fork。** 原始實作依賴一個 `transformers` 4.40.1 的 fork，
+  唯一的修改是在 attention 層內改寫 Llama 的 causal mask：把 mask 的最後一列複製
+  到每一列。對於右側 padding 的序列，這樣剛好只會遮住 padding 的 key。本專案則明
+  確建立這個 mask（`bidirectional_attention_mask`），再傳給原版的 `LlamaModel`。
+  `transformers` 5 會直接使用傳入的 4D mask（`transformers/masking_utils.py`：
+  「If the mask is already 4D, simply return as-is」），而且不論 padding 在哪一側
+  結果都相同。Test 會同時以 SDPA 與 eager 兩種 attention 後端驗證。
+- **不使用 language-model head。** 原始實作保留 `LlamaForCausalLM`，會計算
+  OpenVLA-OFT 根本用不到的詞彙 logits。本專案改用 `LlamaModel`，省去 131M 個不會
+  收到 gradient 的參數。`lm_head` 的權重會在轉換時捨棄。

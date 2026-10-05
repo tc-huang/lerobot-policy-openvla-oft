@@ -146,3 +146,43 @@ Differences from the original implementation (this port):
   always uses the fused backbone, so only the 3-layer variant is kept.
 - **Proprio token shape.** `ProprioProjector` returns `(B, 1, llm_dim)`, a
   ready-to-insert token, instead of leaving the reshape to the caller.
+
+### 4. Language model and bidirectional attention
+
+`BidirectionalLlama` (`language_model.py`) wraps `transformers.LlamaModel` and
+runs it with bidirectional self-attention. In the original autoregressive
+OpenVLA, a causal mask lets each action token see only the tokens before it.
+For parallel decoding, every action position must see every other one, so the
+causal mask is replaced by one that only hides padding tokens.
+
+| Setting           | Value                                                                   | Config field | Source                                                                                                                                                                          |
+| ----------------- | ----------------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language model    | Llama-2 7B: 32 layers, hidden size 4096, 32 heads, MLP size 11008, SiLU | (fixed)      | Paper App. A; Repo `llm_backbone_id: llama2-7b-pure` in the released `config.json`                                                                                              |
+| Vocabulary        | 32064 (32000 Llama-2 tokens + 1 pad token, padded to a multiple of 64)  | (fixed)      | Repo: `text_config.vocab_size`, `pad_to_multiple_of` in the released `config.json`                                                                                              |
+| Pad token id      | 32000                                                                   | (fixed)      | Repo: `pad_token_id` in the released `config.json`                                                                                                                              |
+| RMSNorm epsilon   | 1e-6                                                                    | (fixed)      | Repo: `LlamaConfig` default, since `prismatic/extern/hf/configuration_prismatic.py:119-123` only sets the vocabulary and pad token; not stated in the paper                     |
+| Attention         | Bidirectional; only padding keys are masked                             | (fixed)      | Paper App. A (OFT change 3), App. B.1; Repo `pyproject.toml:50` and transformers fork commit [`bc339d9`](https://github.com/moojink/transformers-openvla-oft/commit/bc339d9ad7) |
+| Output            | Final hidden states after the last RMSNorm; no language-model head      | (fixed)      | Paper App. A (OFT change 4); Repo `prismatic/extern/hf/modeling_prismatic.py:913` (`hidden_states[-1]`)                                                                         |
+| Attention backend | PyTorch SDPA                                                            | (fixed)      | This port; the fork patches the SDPA path                                                                                                                                       |
+
+The RMSNorm epsilon of 1e-6 differs from the 1e-5 in Meta's Llama-2 7B
+configuration (checked via the public mirror
+[`NousResearch/Llama-2-7b-hf`](https://huggingface.co/NousResearch/Llama-2-7b-hf/blob/main/config.json),
+because Meta's repository is gated). The released OpenVLA-OFT checkpoints were
+fine-tuned with 1e-6, so this port keeps it.
+
+Differences from the original implementation (this port):
+
+- **No transformers fork.** The original depends on a fork of `transformers`
+  4.40.1 whose only change rewrites Llama's causal mask inside the attention
+  layer: it copies the mask's last row to every row, which for right-padded
+  sequences leaves exactly the padding keys masked. This port builds that mask
+  explicitly (`bidirectional_attention_mask`) and passes it to the stock
+  `LlamaModel`. `transformers` 5 uses a 4D mask as given
+  (`transformers/masking_utils.py`, "If the mask is already 4D, simply return
+  as-is"), and the result is the same for any padding side. Tests check this
+  with both the SDPA and eager attention backends.
+- **No language-model head.** The original keeps `LlamaForCausalLM` and
+  computes vocabulary logits that OpenVLA-OFT never uses. This port uses
+  `LlamaModel`, which removes 131M parameters that would receive no gradient.
+  The `lm_head` weight is dropped during conversion.
