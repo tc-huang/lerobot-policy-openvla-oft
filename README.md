@@ -65,9 +65,57 @@ or by the training command:
 | ------------------------ | ------------------------------- | ------------------------------------------------ |
 | Total batch size         | 64 (8 per GPU × 8 GPUs)         | `lerobot-train --batch_size`, multi-GPU training |
 | Training steps           | 150K (50K for LIBERO-Goal)      | `lerobot-train --steps`                          |
-| Input images             | 1 third-person + 1 wrist camera | Dataset features; vision backbone                |
+| Input images             | 1 third-person + 1 wrist camera | Dataset features; §2 Vision backbone             |
 | Robot state input        | Yes                             | Dataset features; proprio projector              |
-| Input image size         | 224 × 224                       | Vision backbone                                  |
+| Input image size         | 224 × 224                       | §2 Vision backbone (`image_size`)                |
 | LoRA rank                | 32                              | LoRA fine-tuning                                 |
 | Image augmentations      | 90% random crop, color jitter   | Processor and training                           |
 | FiLM                     | No                              | Out of scope                                     |
+
+### 2. Vision backbone
+
+`FusedVisionBackbone` (`vision_backbone.py`) is OpenVLA's fused vision
+encoder. Every camera image goes through both a DINOv2 and a SigLIP vision
+transformer, built with `timm`. Each produces 256 patch features, which are
+concatenated along the channel dimension (1024 + 1152 = 2176). The features of
+all camera images are then concatenated along the sequence dimension, so two
+cameras yield 512 tokens.
+
+| Setting                  | Value                                                                                                                       | Config field            | Source                                                                                                                                                                                                                        |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Vision transformers      | DINOv2 ViT-L/14 with 4 registers, SigLIP SO400M/14                                                                          | (fixed)                 | Paper App. A; Repo `prismatic/extern/hf/configuration_prismatic.py:36`                                                                                                                                                        |
+| Input image size         | 224 × 224                                                                                                                   | `image_size`            | Paper Table IV; Repo `prismatic/extern/hf/configuration_prismatic.py:22`                                                                                                                                                      |
+| Patch features per image | 256 per transformer                                                                                                         | (derived)               | Paper App. A                                                                                                                                                                                                                  |
+| Feature layer            | Output of the second-to-last block, without the final norm                                                                  | (fixed)                 | Repo `prismatic/extern/hf/modeling_prismatic.py:137`; not stated in the paper                                                                                                                                                 |
+| Prefix tokens            | Dropped (DINOv2 CLS and register tokens)                                                                                    | (fixed)                 | Repo: `get_intermediate_layers` default in `modeling_prismatic.py:137`; not stated in the paper                                                                                                                               |
+| Fusion                   | Concatenate DINOv2 and SigLIP features along channels                                                                       | (fixed)                 | Paper App. A; Repo `prismatic/extern/hf/modeling_prismatic.py:223`                                                                                                                                                            |
+| Multiple images          | Shared backbone, concatenated along the sequence                                                                            | (from dataset features) | Paper App. A (OFT change 1); Repo `prismatic/extern/hf/modeling_prismatic.py:210-227`                                                                                                                                         |
+| Pixel normalization      | DINOv2: mean `(0.484375, 0.455078125, 0.40625)`, std `(0.228515625, 0.2236328125, 0.224609375)`; SigLIP: mean and std `0.5` | (fixed)                 | Repo: `tvf_normalize_params` in the released `preprocessor_config.json`, applied by `prismatic/extern/hf/processing_prismatic.py:139` at both training (`vla-scripts/finetune.py:973`) and inference; not stated in the paper |
+
+The DINOv2 statistics are the ImageNet mean and standard deviation rounded to
+bfloat16. This rounding was baked into the released processor, so the
+checkpoints were trained with these exact values.
+
+Differences from the original implementation (this port):
+
+- **Input layout.** The original packs each image twice into a channel-stacked
+  tensor of shape `(B, 6 × num_images, H, W)`, normalized once per transformer
+  by the processor. Here the backbone takes `(B, num_images, 3, H, W)` in
+  `[0, 1]` and applies each transformer's normalization itself, so the
+  processor stays model-agnostic.
+- **Pruned layers.** The original builds the full transformers and only reads
+  the second-to-last block. Here the last block, the final norm, and the
+  SigLIP attention-pooling head are removed at construction. These parameters
+  never affect the output, so they would receive no gradient; the original
+  works around this by wrapping the model with
+  `DistributedDataParallel(find_unused_parameters=True)`
+  (`vla-scripts/finetune.py:875`). Removing them avoids that overhead in
+  multi-GPU training. The corresponding checkpoint weights are dropped during
+  conversion.
+- **LayerScale naming.** The original renames timm's LayerScale `gamma`
+  parameters to `scale_factor` because Hugging Face `transformers` rewrites
+  parameter names that contain `gamma` (`modeling_prismatic.py:141-157`). This
+  port does not load weights through `transformers`, so it keeps timm's names
+  and renames the checkpoint keys during conversion.
+- **Batched encoding.** All camera images are encoded in one batched call
+  instead of a Python loop over images.

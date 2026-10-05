@@ -34,6 +34,7 @@ class OpenVLAOFTConfig(PreTrainedConfig):
             querying the policy again.
         normalization_mapping: Normalization mode per feature type. State and action
             are mapped from their [q01, q99] range to [-1, 1].
+        image_size: Square input resolution of the vision backbone.
         optimizer_lr: Peak learning rate.
         optimizer_weight_decay: AdamW weight decay.
         optimizer_grad_clip_norm: Gradient clipping norm; 0 disables clipping.
@@ -51,6 +52,8 @@ class OpenVLAOFTConfig(PreTrainedConfig):
             "ACTION": NormalizationMode.QUANTILES,
         }
     )
+
+    image_size: int = 224
 
     optimizer_lr: float = 5e-4
     optimizer_weight_decay: float = 1e-2

@@ -58,9 +58,49 @@ LeRobot 的 `QUANTILES` 與原始實作的 `BOUNDS_Q99` 有兩處不同：原始
 | --------------------- | ----------------------------- | ----------------------------------------- |
 | 總 batch size         | 64（每張 GPU 8 × 8 張 GPU）   | `lerobot-train --batch_size`、多 GPU 訓練 |
 | 訓練步數              | 150K（LIBERO-Goal 為 50K）    | `lerobot-train --steps`                   |
-| 輸入影像              | 1 張第三人稱 + 1 張手腕相機   | Dataset features；vision backbone         |
+| 輸入影像              | 1 張第三人稱 + 1 張手腕相機   | Dataset features；§2 Vision backbone      |
 | 機器人狀態輸入        | 是                            | Dataset features；proprio projector       |
-| 輸入影像尺寸          | 224 × 224                     | Vision backbone                           |
+| 輸入影像尺寸          | 224 × 224                     | §2 Vision backbone（`image_size`）        |
 | LoRA rank             | 32                            | LoRA fine-tuning                          |
 | 影像增強              | 90% random crop、color jitter | Processor 與訓練                          |
 | FiLM                  | 否                            | 不在範圍內                                |
+
+### 2. Vision backbone
+
+`FusedVisionBackbone`（`vision_backbone.py`）是 OpenVLA 的融合式 vision
+encoder。每張相機影像都會同時經過 DINOv2 與 SigLIP 兩個 vision transformer（以
+`timm` 建立）。兩者各自產生 256 個 patch feature，並沿 channel 維度串接
+（1024 + 1152 = 2176）。所有相機影像的 feature 再沿序列維度串接，因此兩台相機會
+產生 512 個 token。
+
+| 設定                        | 值                                                                                                                              | Config 欄位                  | 來源                                                                                                                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Vision transformer          | DINOv2 ViT-L/14（含 4 個 register）、SigLIP SO400M/14                                                                           | （固定）                     | 論文 App. A；原 repo `prismatic/extern/hf/configuration_prismatic.py:36`                                                                                                                       |
+| 輸入影像尺寸                | 224 × 224                                                                                                                       | `image_size`                 | 論文 Table IV；原 repo `prismatic/extern/hf/configuration_prismatic.py:22`                                                                                                                     |
+| 每張影像的 patch feature 數 | 每個 transformer 256 個                                                                                                         | （推導而得）                 | 論文 App. A                                                                                                                                                                                    |
+| 取用的 feature 層           | 倒數第二個 block 的輸出，不經過最後的 norm                                                                                      | （固定）                     | 原 repo `prismatic/extern/hf/modeling_prismatic.py:137`；論文未提及                                                                                                                            |
+| Prefix token                | 捨棄（DINOv2 的 CLS 與 register token）                                                                                         | （固定）                     | 原 repo：`modeling_prismatic.py:137` 中 `get_intermediate_layers` 的預設行為；論文未提及                                                                                                       |
+| 融合方式                    | DINOv2 與 SigLIP 的 feature 沿 channel 串接                                                                                     | （固定）                     | 論文 App. A；原 repo `prismatic/extern/hf/modeling_prismatic.py:223`                                                                                                                           |
+| 多張影像                    | 共用 backbone，沿序列串接                                                                                                       | （由 dataset features 決定） | 論文 App. A（OFT 修改 1）；原 repo `prismatic/extern/hf/modeling_prismatic.py:210-227`                                                                                                         |
+| 像素正規化                  | DINOv2：mean `(0.484375, 0.455078125, 0.40625)`、std `(0.228515625, 0.2236328125, 0.224609375)`；SigLIP：mean 與 std 皆為 `0.5` | （固定）                     | 原 repo：釋出的 `preprocessor_config.json` 中的 `tvf_normalize_params`，由 `prismatic/extern/hf/processing_prismatic.py:139` 套用，訓練（`vla-scripts/finetune.py:973`）與推論皆同；論文未提及 |
+
+DINOv2 的統計值是 ImageNet 的 mean 與 std 經 bfloat16 捨入後的結果。這個捨入被寫
+進了釋出的 processor，因此 checkpoint 正是以這些數值訓練的。
+
+與原始實作的差異（本專案）：
+
+- **輸入格式。** 原始實作把每張影像放兩次，疊成 `(B, 6 × 影像數, H, W)` 的
+  tensor，並由 processor 分別依兩個 transformer 的需求正規化。本專案的 backbone
+  接收值域為 `[0, 1]` 的 `(B, 影像數, 3, H, W)`，並自行套用各 transformer 的正規
+  化，讓 processor 不必知道模型細節。
+- **移除不會用到的層。** 原始實作建立完整的 transformer，但只讀取倒數第二個
+  block。本專案在建立模型時就移除最後一個 block、最後的 norm，以及 SigLIP 的
+  attention-pooling head。這些參數不影響輸出，因此不會收到 gradient；原始實作是
+  用 `DistributedDataParallel(find_unused_parameters=True)` 繞過這個問題
+  （`vla-scripts/finetune.py:875`）。移除這些參數可以省去多 GPU 訓練時的額外負
+  擔。Checkpoint 中對應的權重會在轉換時捨棄。
+- **LayerScale 參數名稱。** 原始實作把 timm LayerScale 的 `gamma` 參數改名為
+  `scale_factor`，因為 Hugging Face `transformers` 會改寫名稱中含有 `gamma` 的參
+  數（`modeling_prismatic.py:141-157`）。本專案不透過 `transformers` 載入權重，因
+  此保留 timm 的名稱，改在轉換時重新命名 checkpoint 的 key。
+- **批次編碼。** 所有相機影像在一次批次呼叫中編碼，而不是用 Python 迴圈逐張處理。
