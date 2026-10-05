@@ -25,7 +25,7 @@ def make_inputs(prompt_lengths, num_images=2):
 
 
 def test_returns_one_hidden_state_per_action_token(model):
-    hidden = model(*make_inputs([5, 5]))
+    hidden = model.action_hidden_states(*make_inputs([5, 5]))
 
     assert hidden.shape == (2, NUM_ACTION_TOKENS, model.llm.hidden_size)
 
@@ -49,7 +49,7 @@ def test_reads_hidden_states_one_position_before_each_placeholder(model):
 
     expected = hidden[:, last_prompt : last_prompt + NUM_ACTION_TOKENS]
 
-    torch.testing.assert_close(model(images, input_ids, prompt_mask, state), expected)
+    torch.testing.assert_close(model.action_hidden_states(images, input_ids, prompt_mask, state), expected)
 
 
 def test_padded_batch_matches_unbatched(model):
@@ -72,4 +72,17 @@ def test_runs_without_proprio(tiny_vision, tiny_llm):
     model = OpenVLAOFT(tiny_vision, tiny_llm, CHUNK_SIZE, ACTION_DIM, proprio_dim=None)
     images, input_ids, prompt_mask, _ = make_inputs([5])
 
-    assert model(images, input_ids, prompt_mask).shape == (1, NUM_ACTION_TOKENS, model.llm.hidden_size)
+    assert model(images, input_ids, prompt_mask).shape == (1, CHUNK_SIZE, ACTION_DIM)
+
+
+def test_predicts_one_action_per_chunk_step(model):
+    actions = model(*make_inputs([4, 6]))
+
+    assert actions.shape == (2, CHUNK_SIZE, ACTION_DIM)
+
+
+def test_every_parameter_receives_gradient(model):
+    model.train()
+    model(*make_inputs([4, 6])).sum().backward()
+
+    assert [name for name, p in model.named_parameters() if p.grad is None] == []

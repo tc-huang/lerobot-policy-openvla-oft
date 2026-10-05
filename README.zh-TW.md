@@ -178,8 +178,8 @@ repository 需要申請存取，這裡是透過公開鏡像
 
 Action placeholder 是零向量，每個 chunk 步驟的每個 action 維度各一個，因此彼此只
 差在 rotary position。Bidirectional attention（§4）讓每個 placeholder 都能讀到影
-像、state、prompt，以及其他 placeholder。模型回傳用來解碼 56 個 action 值的最後
-一層 hidden state，再由 §6 轉換成 action。
+像、state、prompt，以及其他 placeholder。`action_hidden_states` 回傳用來解碼 56
+個 action 值的最後一層 hidden state，再由 §6 轉換成 action。
 
 | 設定                        | 值                                                         | Config 欄位                           | 來源                                                                                                                                                                               |
 | --------------------------- | ---------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -209,3 +209,40 @@ placeholder 的 hidden state 則從未被讀取。釋出的 checkpoint 就是這
 - **Dependency injection。** `OpenVLAOFT` 接收已經建立好的 vision backbone 與
   language model，只自行建立 projector。如何依 configuration 建立這些元件由
   policy（§7）決定，test 也因此可以傳入小型版本。
+
+### 6. L1 regression action head
+
+`L1RegressionActionHead`（`action_head.py`）取代 language model 的輸出層。對每
+個 chunk 步驟，它把該步驟 `action_dim` 個 token 的 hidden state 串接起來（LIBERO
+為 7 × 4096），再用一個 residual MLP 回歸出該步驟正規化後的 action 向量。
+`OpenVLAOFT.forward` 現在回傳預測的 chunk，shape 為
+`(B, chunk_size, action_dim)`。
+
+```text
+LayerNorm → Linear(7·4096 → 4096) → ReLU
+→ 2 × [x + ReLU(Linear(LayerNorm(x)))]
+→ LayerNorm → Linear(4096 → 7)
+```
+
+| 設定       | 值                                                                              | Config 欄位  | 來源                                                                                          |
+| ---------- | ------------------------------------------------------------------------------- | ------------ | --------------------------------------------------------------------------------------------- |
+| Head 類型  | 4 個 linear 層、ReLU 的 MLP，以 L1 regression 訓練                              | （固定）     | 論文 §IV-B、App. A（OFT 修改 4）、App. B.2；原 repo `prismatic/models/action_heads.py:84-107` |
+| 層的結構   | 輸入 LayerNorm 與投影、2 個 pre-LayerNorm residual block、輸出 LayerNorm 與投影 | （固定）     | 原 repo `prismatic/models/action_heads.py:38-81`；論文只寫「4 layers with ReLU activation」   |
+| 隱藏層寬度 | 4096，即 language model 的 hidden size                                          | （固定）     | 原 repo `vla-scripts/finetune.py:894`；論文未提及                                             |
+| 輸入分組   | 每個步驟的 `action_dim` 個 hidden state 串接                                    | （固定）     | 原 repo `prismatic/models/action_heads.py:95`、`:105`                                         |
+| 輸出       | 正規化後的 action，不做壓縮或截斷                                               | （固定）     | 原 repo `prismatic/models/action_heads.py:81`；正規化見 §1                                    |
+| Head 大小  | LIBERO 時為 151M 參數                                                           | （推導而得） | 論文 Table IV                                                                                 |
+
+正規化 action 上的 L1 loss（論文 §IV-B、App. D；原 repo
+`vla-scripts/finetune.py:390`）由 policy（§7）計算。
+
+與原始實作的差異（本專案）：
+
+- **成為網路的一部分。** 原始實作把 action head 放在 Hugging Face 模型之外，推論
+  時再傳入 `predict_action`。本專案把它作為 `OpenVLAOFT` 的子模組，因此單一
+  `state_dict` 就包含所有權重。
+- **參數名稱。** `MLPResNet` 的 `layer_norm1`、`fc1`、`mlp_resnet_blocks.N.ffn`、
+  `layer_norm2`、`fc2`，在本專案中分別命名為 `input_norm`、`input_proj`、
+  `blocks.N`、`output_norm`、`output_proj`。Checkpoint 的 key 會在轉換時重新命名。
+- **不依賴全域的 chunk 大小。** 原始實作用模組層級的常數 `NUM_ACTIONS_CHUNK` 做
+  reshape；本 head 則從輸入推得 chunk 長度。

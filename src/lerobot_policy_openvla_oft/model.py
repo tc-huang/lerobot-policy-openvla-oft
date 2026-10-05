@@ -1,13 +1,14 @@
 import torch
 from torch import Tensor, nn
 
+from .action_head import L1RegressionActionHead
 from .language_model import BidirectionalLlama
 from .projectors import ProprioProjector, VisionProjector
 from .vision_backbone import FusedVisionBackbone
 
 
 class OpenVLAOFT(nn.Module):
-    """OpenVLA-OFT network that decodes a whole action chunk in one forward pass.
+    """OpenVLA-OFT network that predicts a whole action chunk in one forward pass.
 
     The LLM input sequence is laid out as
 
@@ -15,7 +16,8 @@ class OpenVLAOFT(nn.Module):
 
     with one placeholder per action dimension per chunk step. Placeholders are zero
     vectors, so they differ only through their rotary position; bidirectional
-    attention lets every placeholder read the whole sequence.
+    attention lets every placeholder read the whole sequence, and an MLP action head
+    regresses the actions from the placeholders' hidden states.
     """
 
     def __init__(
@@ -31,9 +33,19 @@ class OpenVLAOFT(nn.Module):
         self.vision_projector = VisionProjector(vision.embed_dim, llm.hidden_size)
         self.proprio_projector = ProprioProjector(proprio_dim, llm.hidden_size) if proprio_dim else None
         self.llm = llm
+        self.action_head = L1RegressionActionHead(llm.hidden_size, action_dim)
         self.num_action_tokens = chunk_size * action_dim
 
     def forward(
+        self, images: Tensor, input_ids: Tensor, prompt_mask: Tensor, state: Tensor | None = None
+    ) -> Tensor:
+        """Predicts a normalized action chunk of shape (B, chunk_size, action_dim).
+
+        Arguments are the same as for `action_hidden_states`.
+        """
+        return self.action_head(self.action_hidden_states(images, input_ids, prompt_mask, state))
+
+    def action_hidden_states(
         self, images: Tensor, input_ids: Tensor, prompt_mask: Tensor, state: Tensor | None = None
     ) -> Tensor:
         """Returns the hidden states that decode the action chunk.

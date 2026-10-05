@@ -201,8 +201,8 @@ following input sequence for the language model:
 The action placeholders are zero vectors, one per action dimension per chunk
 step, so they differ only by their rotary position. Bidirectional attention
 (§4) lets every placeholder read the images, the state, the prompt, and the
-other placeholders. The model returns the final hidden states that decode the
-56 action values; §6 maps them to actions.
+other placeholders. `action_hidden_states` returns the final hidden states that
+decode the 56 action values; §6 maps them to actions.
 
 | Setting                         | Value                                                                             | Config field                       | Source                                                                                                                                                                               |
 | ------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -237,3 +237,42 @@ Differences from the original implementation (this port):
   language model as constructed modules and only builds the projectors
   itself. The policy (§7) decides how to build the components from the
   configuration, and tests can pass tiny versions.
+
+### 6. L1 regression action head
+
+`L1RegressionActionHead` (`action_head.py`) replaces the language model's
+output layer. For each chunk step, it concatenates the hidden states of that
+step's `action_dim` tokens (7 × 4096 for LIBERO) and regresses the step's
+normalized action vector with a residual MLP. `OpenVLAOFT.forward` now returns
+the predicted chunk of shape `(B, chunk_size, action_dim)`.
+
+```text
+LayerNorm → Linear(7·4096 → 4096) → ReLU
+→ 2 × [x + ReLU(Linear(LayerNorm(x)))]
+→ LayerNorm → Linear(4096 → 7)
+```
+
+| Setting         | Value                                                                                            | Config field | Source                                                                                               |
+| --------------- | ------------------------------------------------------------------------------------------------ | ------------ | ---------------------------------------------------------------------------------------------------- |
+| Head type       | MLP with 4 linear layers and ReLU, trained with L1 regression                                    | (fixed)      | Paper §IV-B, App. A (OFT change 4), App. B.2; Repo `prismatic/models/action_heads.py:84-107`         |
+| Layer structure | Input LayerNorm and projection, 2 pre-LayerNorm residual blocks, output LayerNorm and projection | (fixed)      | Repo `prismatic/models/action_heads.py:38-81`; the paper only states "4 layers with ReLU activation" |
+| Hidden width    | 4096, the language model's hidden size                                                           | (fixed)      | Repo `vla-scripts/finetune.py:894`; not stated in the paper                                          |
+| Input grouping  | One step's `action_dim` hidden states, concatenated                                              | (fixed)      | Repo `prismatic/models/action_heads.py:95`, `:105`                                                   |
+| Output          | Normalized actions, without squashing or clipping                                                | (fixed)      | Repo `prismatic/models/action_heads.py:81`; normalization in §1                                      |
+| Head size       | 151M parameters for LIBERO                                                                       | (derived)    | Paper Table IV                                                                                       |
+
+The L1 loss on normalized actions (Paper §IV-B, App. D; Repo
+`vla-scripts/finetune.py:390`) is computed by the policy (§7).
+
+Differences from the original implementation (this port):
+
+- **Part of the network.** The original keeps the action head outside the
+  Hugging Face model and passes it into `predict_action` at inference. Here it
+  is a submodule of `OpenVLAOFT`, so a single `state_dict` holds every weight.
+- **Parameter names.** `MLPResNet`'s `layer_norm1`, `fc1`,
+  `mlp_resnet_blocks.N.ffn`, `layer_norm2`, and `fc2` are named `input_norm`,
+  `input_proj`, `blocks.N`, `output_norm`, and `output_proj` here. Checkpoint
+  keys are renamed during conversion.
+- **No global chunk size.** The original reshapes with the module-level
+  `NUM_ACTIONS_CHUNK` constant; this head infers the chunk length from its
+  input.
