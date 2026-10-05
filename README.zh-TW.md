@@ -59,16 +59,16 @@ LeRobot 的 `QUANTILES` 與原始實作的 `BOUNDS_Q99` 有兩處不同：原始
 
 論文 Table IV 中其餘的超參數，由其他元件或訓練指令負責：
 
-| 設定（論文 Table IV） | 值                            | 負責的元件                                |
-| --------------------- | ----------------------------- | ----------------------------------------- |
-| 總 batch size         | 64（每張 GPU 8 × 8 張 GPU）   | `lerobot-train --batch_size`、多 GPU 訓練 |
-| 訓練步數              | 150K（LIBERO-Goal 為 50K）    | `lerobot-train --steps`                   |
-| 輸入影像              | 1 張第三人稱 + 1 張手腕相機   | Dataset features；§2 Vision backbone      |
-| 機器人狀態輸入        | 是                            | Dataset features；§3 Projectors           |
-| 輸入影像尺寸          | 224 × 224                     | §2 Vision backbone（`image_size`）        |
-| LoRA rank             | 32                            | LoRA fine-tuning                          |
-| 影像增強              | 90% random crop、color jitter | Processor 與訓練                          |
-| FiLM                  | 否                            | 不在範圍內                                |
+| 設定（論文 Table IV） | 值                            | 負責的元件                                                   |
+| --------------------- | ----------------------------- | ------------------------------------------------------------ |
+| 總 batch size         | 64（每張 GPU 8 × 8 張 GPU）   | `lerobot-train --batch_size`、多 GPU 訓練                    |
+| 訓練步數              | 150K（LIBERO-Goal 為 50K）    | `lerobot-train --steps`                                      |
+| 輸入影像              | 1 張第三人稱 + 1 張手腕相機   | Dataset features；§2 Vision backbone                         |
+| 機器人狀態輸入        | 是                            | Dataset features；§3 Projectors                              |
+| 輸入影像尺寸          | 224 × 224                     | §2 Vision backbone（`image_size`）                           |
+| LoRA rank             | 32                            | LoRA fine-tuning                                             |
+| 影像增強              | 90% random crop、color jitter | 90% crop：§8.3（`image_crop_scale`）；color jitter：訓練指令 |
+| FiLM                  | 否                            | 不在範圍內                                                   |
 
 ### 2. Vision backbone
 
@@ -395,3 +395,55 @@ checkpoint 時，會依 `dataset_statistics.json` 設定 `action_norm_mask`。
 接照抄原始公式（`data_utils.py:72-83`、`modeling_prismatic.py:785-789`）的計算結果
 比對，涵蓋超出 `[q01, q99]` 的值與被 mask 的維度，並確認 mask 在 pipeline 存檔後
 重新載入仍然保留。
+
+#### 8.3 影像
+
+影像處理分成 preprocessor 與 policy 兩部分，因為其中一部分在訓練與推論時相同，另
+一部分則不同：
+
+```text
+相機影像 ─▶ [preprocessor] resize 到 224 × 224
+         ─▶ [policy] crop 90% 的面積，再 resize 回 224 × 224
+                     訓練：位置隨機的正方形框
+                     推論：置中的正方形框
+         ─▶ vision backbone（§2）
+```
+
+原始實作在 fine-tune 時使用涵蓋 90% 影像面積的隨機 crop，評估時則使用對應的中央
+crop，讓網路看到的視野始終一致（論文 Table IV；原始 `LIBERO.md:82` 也因此強調評估時必須
+設定 `--center_crop True`）。LeRobot 在兩種模式下執行同一條 preprocessor，因此 crop 放
+在 policy 中，依 `self.training` 切換。LeRobot 自己的 Diffusion Policy 也是這樣處
+理隨機與中央 crop。
+
+| 設定          | 值                                                   | Config 欄位               | 來源                                                                                                                                                                |
+| ------------- | ---------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Resize        | 到 `image_size` × `image_size`，antialias 的 bicubic | `image_size`              | 原 repo：訓練（`dlimp/utils.py` 的 `resize_image`）與評估（`experiments/robot/openvla_utils.py:538-541`）皆使用 Lanczos3；bicubic 是本專案在 PyTorch 中最接近的選項 |
+| Crop 面積     | 影像面積的 90%，正方形                               | `image_crop_scale`（0.9） | 論文 Table IV（`random_resized_crop=dict(scale=[0.9, 0.9], ratio=[1.0, 1.0])`）；原 repo `prismatic/vla/datasets/datasets.py:152-153`                               |
+| 訓練時的 crop | 隨機位置，以 bilinear 取樣 resize 回原尺寸           | `image_crop_scale`        | 原 repo：`dlimp/augmentations.py`（`random_resized_crop`），每台相機使用不同的 seed（`prismatic/vla/datasets/rlds/obs_transforms.py:27-38`）                        |
+| 推論時的 crop | 置中，以 bilinear 取樣 resize 回原尺寸               | `image_crop_scale`        | 原 repo `experiments/robot/openvla_utils.py:546-593`（`crop_and_resize`），套用於每台相機（`:682-708`）                                                             |
+| 相機          | 每台相機的影像，包括手腕相機                         | （固定）                  | 原 repo：同上                                                                                                                                                       |
+
+要與原始實作完全一致，需要注意的細節：
+
+- **Crop 的取樣方式。** 原始實作的兩種 crop 都使用 `tf.image.crop_and_resize`，框
+  的角點可以是小數。`image_crop.py` 中的 `crop_and_resize` 用
+  `torch.nn.functional.grid_sample`（`align_corners=True`）重現它的 bilinear 取
+  樣；`tests/test_image_crop.py` 把結果與直接照抄 TensorFlow 公式的計算比對。
+- **沿對角線移動的隨機 crop。** `random_resized_crop` 用同一個隨機 seed 抽出垂直與
+  水平的位移，因此對正方形的框來說兩個位移相等，框只會沿著影像的對角線移動。
+  `crop_boxes` 也重現了這一點。
+
+與原始實作的已知差異（本專案）：
+
+- **插值方式。** 原始實作以 TensorFlow 的 antialias Lanczos3 濾波器 resize，評估時
+  還會先把每張影像做一次 JPEG 編碼再解碼，以模仿壓縮過的訓練資料。PyTorch 沒有適
+  用於 tensor 的 Lanczos resize，因此本專案使用 antialias 的 bicubic，並省略 JPEG
+  編碼與解碼。相機影像若已經是目標尺寸，就不做 resize。
+- **不做 8 位元捨入。** 原始實作在正規化前會把 crop 後的影像轉回 8 位元整數；本專
+  案則保持浮點數。
+- **Color jitter。** 原始實作在訓練時也會擾動亮度、對比、飽和度與色相（論文 Table
+  IV）。LeRobot 的 dataset 已經提供這些轉換（`--dataset.image_transforms`），因此
+  在訓練指令中設定，而不是在這裡。
+
+這些差異只會讓像素值略有不同。若 LIBERO 的成功率低於論文，這裡是第一個要檢查的地
+方。

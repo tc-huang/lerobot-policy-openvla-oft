@@ -2,10 +2,12 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+import torch.nn.functional as F  # noqa: N812
 from lerobot.configs import FeatureType, NormalizationMode, PipelineFeatureType, PolicyFeature
 from lerobot.processor import (
     ComplementaryDataProcessorStep,
     NormalizerProcessorStep,
+    ObservationProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
     ProcessorStepRegistry,
@@ -15,6 +17,7 @@ from lerobot.processor import (
     make_policy_processor_pipelines,
 )
 from lerobot.processor.normalize_processor import _NormalizationMixin
+from lerobot.utils.constants import OBS_IMAGES
 from torch import Tensor
 from transformers import LlamaTokenizerFast
 
@@ -57,6 +60,41 @@ class OpenVLATokenizerProcessorStep(TokenizerProcessorStep):
 
     def __post_init__(self) -> None:
         self.input_tokenizer = LlamaTokenizerFast.from_pretrained(self.tokenizer_name)
+
+
+@ProcessorStepRegistry.register(name="openvla_oft_image_resize")
+@dataclass
+class OpenVLAImageResizeProcessorStep(ObservationProcessorStep):
+    """Resizes every camera image to `size` x `size` with antialiased bicubic interpolation."""
+
+    size: int = 224
+
+    def observation(self, observation: dict[str, Any]) -> dict[str, Any]:
+        return {key: self._resize(value) if _is_image(key) else value for key, value in observation.items()}
+
+    def _resize(self, images: Tensor) -> Tensor:
+        if images.shape[-2:] == (self.size, self.size):
+            return images
+        resized = F.interpolate(images, size=(self.size, self.size), mode="bicubic", antialias=True)
+        return resized.clamp(0.0, 1.0)
+
+    def get_config(self) -> dict[str, Any]:
+        return {"size": self.size}
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        observation = features[PipelineFeatureType.OBSERVATION]
+        for key, feature in observation.items():
+            if _is_image(key):
+                observation[key] = PolicyFeature(
+                    type=feature.type, shape=(feature.shape[0], self.size, self.size)
+                )
+        return features
+
+
+def _is_image(key: str) -> bool:
+    return key.startswith(f"{OBS_IMAGES}.")
 
 
 @dataclass
@@ -108,14 +146,15 @@ def make_openvla_oft_pre_post_processors(
 ]:
     """Builds the OpenVLA-OFT preprocessor and postprocessor.
 
-    The preprocessor formats and tokenizes the prompt, moves data to the policy
-    device, and normalizes state and action. The postprocessor unnormalizes actions
-    and moves them back to the CPU.
+    The preprocessor resizes the camera images, formats and tokenizes the prompt,
+    moves data to the policy device, and normalizes state and action. The
+    postprocessor unnormalizes actions and moves them back to the CPU.
     """
     steps = make_default_policy_processor_steps(config, dataset_stats)
     input_steps = [
         steps.rename_observations,
         steps.add_batch_dim,
+        OpenVLAImageResizeProcessorStep(size=config.image_size),
         OpenVLAPromptProcessorStep(),
         OpenVLATokenizerProcessorStep(
             tokenizer_name=config.tokenizer_name, padding="longest", padding_side="right"

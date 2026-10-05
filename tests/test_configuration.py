@@ -83,3 +83,9 @@ def test_rejects_action_norm_mask_of_wrong_length():
 
     with pytest.raises(ValueError, match="action_norm_mask"):
         config.validate_features()
+
+
+@pytest.mark.parametrize("scale", [0.0, 1.5])
+def test_rejects_image_crop_scale_outside_unit_interval(scale):
+    with pytest.raises(ValueError, match="image_crop_scale"):
+        OpenVLAOFTConfig(image_crop_scale=scale)

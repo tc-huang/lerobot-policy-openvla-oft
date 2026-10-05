@@ -37,6 +37,9 @@ class OpenVLAOFTConfig(PreTrainedConfig):
         action_norm_mask: Per action dimension, whether it is normalized. Masked
             dimensions are passed through unchanged. None normalizes every dimension.
         image_size: Square input resolution of the vision backbone.
+        image_crop_scale: Area fraction of the square crop taken from each image and
+            resized back to `image_size`: at random during training, centered at
+            inference. 1.0 disables cropping.
         tokenizer_name: Hugging Face repository of the Llama-2 tokenizer used for prompts.
         dtype: Weight dtype of the network; any dtype other than float32 also runs
             the forward pass under autocast to that dtype.
@@ -64,6 +67,7 @@ class OpenVLAOFTConfig(PreTrainedConfig):
     action_norm_mask: list[bool] | None = None
 
     image_size: int = 224
+    image_crop_scale: float = 0.9
     tokenizer_name: str = "openvla/openvla-7b"
 
     dtype: str = "bfloat16"
@@ -84,6 +88,8 @@ class OpenVLAOFTConfig(PreTrainedConfig):
             raise ValueError(
                 f"`n_action_steps` must be in [1, chunk_size={self.chunk_size}], got {self.n_action_steps}."
             )
+        if not 0 < self.image_crop_scale <= 1:
+            raise ValueError(f"`image_crop_scale` must be in (0, 1], got {self.image_crop_scale}.")
         if self.dtype not in ("bfloat16", "float32"):
             raise ValueError(f"`dtype` must be 'bfloat16' or 'float32', got {self.dtype!r}.")
 

@@ -54,6 +54,7 @@ def make_config(with_state=True, **overrides):
         output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(ACTION_DIM,))},
         chunk_size=CHUNK_SIZE,
         n_action_steps=CHUNK_SIZE,
+        image_size=TINY_IMAGE_SIZE,
         device="cpu",
         **{"dtype": "float32", **overrides},
     )
@@ -76,7 +77,7 @@ def test_resolved_by_lerobot_factory():
 
 
 def test_forward_returns_differentiable_l1_loss():
-    policy = OpenVLAOFTPolicy(make_config())
+    policy = OpenVLAOFTPolicy(make_config()).eval()
     batch = make_batch()
 
     loss, info = policy(batch)
@@ -90,7 +91,7 @@ def test_forward_returns_differentiable_l1_loss():
 
 @pytest.mark.parametrize("mask_padded_actions", [False, True])
 def test_padded_actions_count_only_when_unmasked(mask_padded_actions):
-    policy = OpenVLAOFTPolicy(make_config(mask_padded_actions=mask_padded_actions))
+    policy = OpenVLAOFTPolicy(make_config(mask_padded_actions=mask_padded_actions)).eval()
     batch = make_batch()
     batch[f"{ACTION}_is_pad"][:, -1] = True
     loss, _ = policy(batch)
@@ -166,3 +167,12 @@ def test_accepts_preprocessor_output(monkeypatch):
     action = postprocessor(policy.select_action(preprocessor(observation)))
 
     assert action.shape == (1, ACTION_DIM)
+
+
+def test_crops_randomly_only_in_training():
+    policy = OpenVLAOFTPolicy(make_config())
+    batch = make_batch()
+
+    assert not torch.equal(policy._predict(batch), policy._predict(batch))
+    policy.eval()
+    torch.testing.assert_close(policy._predict(batch), policy._predict(batch))

@@ -66,16 +66,16 @@ the processor (§8.2).
 The remaining hyperparameters in Paper Table IV are owned by other components
 or by the training command:
 
-| Setting (Paper Table IV) | Value                           | Handled by                                       |
-| ------------------------ | ------------------------------- | ------------------------------------------------ |
-| Total batch size         | 64 (8 per GPU × 8 GPUs)         | `lerobot-train --batch_size`, multi-GPU training |
-| Training steps           | 150K (50K for LIBERO-Goal)      | `lerobot-train --steps`                          |
-| Input images             | 1 third-person + 1 wrist camera | Dataset features; §2 Vision backbone             |
-| Robot state input        | Yes                             | Dataset features; §3 Projectors                  |
-| Input image size         | 224 × 224                       | §2 Vision backbone (`image_size`)                |
-| LoRA rank                | 32                              | LoRA fine-tuning                                 |
-| Image augmentations      | 90% random crop, color jitter   | Processor and training                           |
-| FiLM                     | No                              | Out of scope                                     |
+| Setting (Paper Table IV) | Value                           | Handled by                                                          |
+| ------------------------ | ------------------------------- | ------------------------------------------------------------------- |
+| Total batch size         | 64 (8 per GPU × 8 GPUs)         | `lerobot-train --batch_size`, multi-GPU training                    |
+| Training steps           | 150K (50K for LIBERO-Goal)      | `lerobot-train --steps`                                             |
+| Input images             | 1 third-person + 1 wrist camera | Dataset features; §2 Vision backbone                                |
+| Robot state input        | Yes                             | Dataset features; §3 Projectors                                     |
+| Input image size         | 224 × 224                       | §2 Vision backbone (`image_size`)                                   |
+| LoRA rank                | 32                              | LoRA fine-tuning                                                    |
+| Image augmentations      | 90% random crop, color jitter   | 90% crop: §8.3 (`image_crop_scale`); color jitter: training command |
+| FiLM                     | No                              | Out of scope                                                        |
 
 ### 2. Vision backbone
 
@@ -445,3 +445,60 @@ postprocessor against direct transcriptions of the original formulas
 (`data_utils.py:72-83`, `modeling_prismatic.py:785-789`), including values
 outside `[q01, q99]` and a masked dimension, and checks that the mask survives
 saving and reloading the pipeline.
+
+#### 8.3 Images
+
+Image handling is split between the preprocessor and the policy, because one
+part is the same at training and inference time and the other is not:
+
+```text
+camera image ─▶ [preprocessor] resize to 224 × 224
+             ─▶ [policy] crop 90% of the area and resize back to 224 × 224
+                         training: square box at a random offset
+                         inference: square box at the center
+             ─▶ vision backbone (§2)
+```
+
+The original fine-tunes with a random crop covering 90% of the image area and
+evaluates with the matching center crop, so the network always sees the same
+field of view (Paper Table IV; the original `LIBERO.md:82` stresses that
+evaluation must use `--center_crop True` for this reason). LeRobot runs the same preprocessor in both
+modes, so the crop lives in the policy and switches on `self.training`. This
+is how LeRobot's own Diffusion Policy handles its random and center crops.
+
+| Setting        | Value                                               | Config field             | Source                                                                                                                                                                     |
+| -------------- | --------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Resize         | To `image_size` × `image_size`, antialiased bicubic | `image_size`             | Repo: Lanczos3 in training (`dlimp/utils.py`, `resize_image`) and evaluation (`experiments/robot/openvla_utils.py:538-541`); bicubic is this port's closest PyTorch option |
+| Crop area      | 90% of the image area, square                       | `image_crop_scale` (0.9) | Paper Table IV (`random_resized_crop=dict(scale=[0.9, 0.9], ratio=[1.0, 1.0])`); Repo `prismatic/vla/datasets/datasets.py:152-153`                                         |
+| Training crop  | Random offset, resized back with bilinear sampling  | `image_crop_scale`       | Repo: `dlimp/augmentations.py` (`random_resized_crop`), applied per camera with a different seed (`prismatic/vla/datasets/rlds/obs_transforms.py:27-38`)                   |
+| Inference crop | Centered, resized back with bilinear sampling       | `image_crop_scale`       | Repo `experiments/robot/openvla_utils.py:546-593` (`crop_and_resize`), applied to every camera (`:682-708`)                                                                |
+| Cameras        | Every camera image, wrist cameras included          | (fixed)                  | Repo: as above                                                                                                                                                             |
+
+Details that matter for matching the original exactly:
+
+- **Crop sampling.** Both original crops use `tf.image.crop_and_resize` with
+  fractional box corners. `crop_and_resize` in `image_crop.py` reproduces its
+  bilinear sampling with `torch.nn.functional.grid_sample`
+  (`align_corners=True`); `tests/test_image_crop.py` checks it against a
+  direct transcription of TensorFlow's formula.
+- **Diagonal random crop.** `random_resized_crop` draws the vertical and
+  horizontal offsets with the same random seed, so for a square box both
+  offsets are equal and the box only moves along the image diagonal.
+  `crop_boxes` reproduces this.
+
+Known differences from the original (this port):
+
+- **Interpolation.** The original resizes with TensorFlow's antialiased
+  Lanczos3 filter, and at evaluation it first round-trips each image through
+  JPEG to mimic the compressed training data. PyTorch has no Lanczos resize for
+  tensors, so this port uses antialiased bicubic and skips the JPEG round trip.
+  When the camera image already has the target size, the resize is skipped.
+- **No 8-bit rounding.** The original converts cropped images back to 8-bit
+  integers before normalization; this port keeps them in floating point.
+- **Color jitter.** The original also jitters brightness, contrast,
+  saturation, and hue during training (Paper Table IV). LeRobot datasets
+  already provide these transforms (`--dataset.image_transforms`), so they are
+  configured in the training command, not here.
+
+These differences change pixel values only slightly. They are the first place
+to look if the LIBERO success rates fall short of the paper.

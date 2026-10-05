@@ -12,7 +12,10 @@ from lerobot.utils.constants import (
 )
 
 from lerobot_policy_openvla_oft import OpenVLAOFTConfig, make_openvla_oft_pre_post_processors
-from lerobot_policy_openvla_oft.processor_openvla_oft import OpenVLAPromptProcessorStep
+from lerobot_policy_openvla_oft.processor_openvla_oft import (
+    OpenVLAImageResizeProcessorStep,
+    OpenVLAPromptProcessorStep,
+)
 
 TASK = "Pick up the black bowl between the plate and the ramekin and place it on the plate"
 # Recorded with the original stack (transformers 4.40.1, LlamaTokenizerFast) for
@@ -143,3 +146,21 @@ def test_action_norm_mask_survives_round_trip(tmp_path, processors):
 
     normalized = torch.tensor([[0.5, 0.25]])
     torch.testing.assert_close(loaded(normalized), original_unnormalize(normalized, MASK))
+
+
+def test_resizes_camera_images_only(processors):
+    preprocessor, _ = processors
+
+    batch = preprocessor(make_observation(torch.zeros(2)) | {f"{OBS_IMAGES}.image": torch.rand(3, 256, 320)})
+
+    assert batch[f"{OBS_IMAGES}.image"].shape == (1, 3, 224, 224)
+    assert batch[f"{OBS_IMAGES}.image"].min() >= 0 and batch[f"{OBS_IMAGES}.image"].max() <= 1
+    assert batch[OBS_STATE].shape == (1, 2)
+
+
+def test_resize_keeps_images_already_at_size():
+    images = torch.rand(1, 3, 224, 224)
+
+    resized = OpenVLAImageResizeProcessorStep(size=224).observation({f"{OBS_IMAGES}.image": images})
+
+    assert resized[f"{OBS_IMAGES}.image"] is images

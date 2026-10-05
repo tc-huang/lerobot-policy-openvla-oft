@@ -7,6 +7,7 @@ from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LAN
 from torch import Tensor
 
 from .configuration_openvla_oft import OpenVLAOFTConfig
+from .image_crop import crop_and_resize, crop_boxes
 from .language_model import BidirectionalLlama, openvla_llama_config
 from .model import OpenVLAOFT
 from .vision_backbone import FusedVisionBackbone
@@ -29,7 +30,8 @@ class OpenVLAOFTPolicy(PreTrainedPolicy):
 
     Expects batches already processed by the OpenVLA-OFT preprocessor: images resized
     to `config.image_size` with values in [0, 1], normalized state and actions, and
-    the tokenized prompt.
+    the tokenized prompt. Image cropping depends on the training mode, so it happens
+    here rather than in the preprocessor.
     """
 
     config_class = OpenVLAOFTConfig
@@ -78,7 +80,7 @@ class OpenVLAOFTPolicy(PreTrainedPolicy):
         return self._action_queue.popleft()
 
     def _predict(self, batch: dict[str, Tensor]) -> Tensor:
-        images = torch.stack([batch[key] for key in self.config.image_features], dim=1)
+        images = self._crop(torch.stack([batch[key] for key in self.config.image_features], dim=1))
         state = batch[OBS_STATE] if self.model.proprio_projector is not None else None
         with torch.autocast(images.device.type, dtype=self.dtype, enabled=self.dtype != torch.float32):
             return self.model(
@@ -87,3 +89,11 @@ class OpenVLAOFTPolicy(PreTrainedPolicy):
                 batch[OBS_LANGUAGE_ATTENTION_MASK].bool(),
                 state,
             )
+
+    def _crop(self, images: Tensor) -> Tensor:
+        """Crops each of the (B, num_images, 3, H, W) images: randomly in training, centered otherwise."""
+        if self.config.image_crop_scale == 1.0:
+            return images
+        flat = images.flatten(0, 1)
+        boxes = crop_boxes(flat.shape[0], self.config.image_crop_scale, self.training, flat.device)
+        return crop_and_resize(flat, boxes).unflatten(0, images.shape[:2])
