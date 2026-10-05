@@ -48,6 +48,14 @@ run: |
   if [ ! -f "$CHECKPOINT_DIR/model.safetensors" ]; then
     uv run --extra libero python -m lerobot_policy_openvla_oft.convert_checkpoint \
       --repo-id "$CHECKPOINT" --output-dir "$CHECKPOINT_DIR"
+    # The released files are no longer needed once converted; free the disk for other suites.
+    uv run --extra libero python - "$CHECKPOINT" <<'PY'
+  import sys
+  from huggingface_hub import scan_cache_dir
+  cache = scan_cache_dir()
+  revisions = [rev.commit_hash for repo in cache.repos if repo.repo_id == sys.argv[1] for rev in repo.revisions]
+  cache.delete_revisions(*revisions).execute()
+  PY
   fi
   uv run --extra libero lerobot-eval \
     --policy.path="$CHECKPOINT_DIR" \
