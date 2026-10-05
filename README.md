@@ -502,3 +502,74 @@ Known differences from the original (this port):
 
 These differences change pixel values only slightly. They are the first place
 to look if the LIBERO success rates fall short of the paper.
+
+### 9. Checkpoint conversion
+
+`convert_checkpoint.py` turns a released OpenVLA-OFT checkpoint into a LeRobot
+policy directory that `--policy.path` can load:
+
+```bash
+uv run python -m lerobot_policy_openvla_oft.convert_checkpoint \
+    --repo-id moojink/openvla-7b-oft-finetuned-libero-spatial \
+    --output-dir outputs/checkpoints/libero-spatial
+```
+
+`outputs/` is ignored by git. The script downloads only the files it needs
+(about 15.5 GB per checkpoint) into the Hugging Face cache, and writes about
+15 GB of bfloat16 weights plus the processor pipelines.
+
+Released checkpoints:
+
+| Repository                                                       | Training data           |
+| ---------------------------------------------------------------- | ----------------------- |
+| `moojink/openvla-7b-oft-finetuned-libero-spatial`                | LIBERO-Spatial          |
+| `moojink/openvla-7b-oft-finetuned-libero-object`                 | LIBERO-Object           |
+| `moojink/openvla-7b-oft-finetuned-libero-goal`                   | LIBERO-Goal             |
+| `moojink/openvla-7b-oft-finetuned-libero-10`                     | LIBERO-10 (LIBERO-Long) |
+| `moojink/openvla-7b-oft-finetuned-libero-spatial-object-goal-10` | All four suites         |
+
+What each released file becomes:
+
+| Released file                           | Content                                                                              | Conversion                                                                                          |
+| --------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `model-0000{1..4}-of-00004.safetensors` | Vision backbone, vision projector, and Llama-2, with the LoRA weights already merged | Keys renamed as in the table below; unused weights dropped                                          |
+| `action_head--*.pt`                     | L1 regression action head (§6)                                                       | Keys renamed as in the table below                                                                  |
+| `proprio_projector--*.pt`               | Proprio projector (§3)                                                               | `module.` prefix removed                                                                            |
+| `dataset_statistics.json`               | `q01`, `q99`, and the action `mask`                                                  | LeRobot statistics for `observation.state` and `action`; the mask becomes `action_norm_mask` (§8.2) |
+| `lora_adapter/`                         | Unmerged LoRA weights                                                                | Not needed, since the model weights already include them                                            |
+
+Key mapping:
+
+| Released key                                                              | This port                                            | Reason                       |
+| ------------------------------------------------------------------------- | ---------------------------------------------------- | ---------------------------- |
+| `vision_backbone.featurizer.*`                                            | `model.vision.dinov2.vit.*`                          | §2                           |
+| `vision_backbone.fused_featurizer.*`                                      | `model.vision.siglip.vit.*`                          | §2                           |
+| `*.ls1.scale_factor`, `*.ls2.scale_factor`                                | `*.ls1.gamma`, `*.ls2.gamma`                         | timm's LayerScale names (§2) |
+| `projector.*`                                                             | `model.vision_projector.*`                           | §3                           |
+| `language_model.model.*`                                                  | `model.llm.model.*`                                  | §4                           |
+| `module.*` (proprio projector)                                            | `model.proprio_projector.*`                          | §3                           |
+| `module.model.layer_norm1`, `fc1`                                         | `model.action_head.input_norm`, `input_proj`         | §6                           |
+| `module.model.mlp_resnet_blocks.N.ffn.0`, `ffn.1`                         | `model.action_head.blocks.N.norm`, `blocks.N.linear` | §6                           |
+| `module.model.layer_norm2`, `fc2`                                         | `model.action_head.output_norm`, `output_proj`       | §6                           |
+| `language_model.lm_head.weight`                                           | Dropped                                              | No language-model head (§4)  |
+| `vision_backbone.featurizer.blocks.23.*`, `.norm.*`                       | Dropped                                              | Unused DINOv2 layers (§2)    |
+| `vision_backbone.fused_featurizer.blocks.26.*`, `.norm.*`, `.attn_pool.*` | Dropped                                              | Unused SigLIP layers (§2)    |
+
+The configuration written with each checkpoint matches LeRobot's LIBERO
+environment: the third-person camera `observation.images.image` comes first
+and the wrist camera `observation.images.image2` second, as in the original
+(`prismatic/vla/datasets/rlds/oxe/configs.py:645-651`), followed by an 8-dim
+`observation.state` and a 7-dim `action`.
+
+How this is verified:
+
+- **Strict loading.** `load_released_weights` maps every released key and
+  loads with `strict=True`. Only the weights listed as dropped above may be
+  left over; any other unmapped or missing key raises an error.
+- **Offline key check.** Against the released `model.safetensors.index.json`,
+  the 981 remaining keys cover all 938 vision, projector, and language-model
+  parameters of this port, and the other 43 are exactly the pruned vision
+  layers.
+- **Tests.** `tests/test_convert_checkpoint.py` builds a released-format state
+  dict from a tiny model, converts it back, and requires every value to be
+  identical, plus failure cases for unknown and missing keys.

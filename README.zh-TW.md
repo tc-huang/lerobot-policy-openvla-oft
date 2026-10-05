@@ -447,3 +447,72 @@ crop，讓網路看到的視野始終一致（論文 Table IV；原始 `LIBERO.m
 
 這些差異只會讓像素值略有不同。若 LIBERO 的成功率低於論文，這裡是第一個要檢查的地
 方。
+
+### 9. Checkpoint 轉換
+
+`convert_checkpoint.py` 把釋出的 OpenVLA-OFT checkpoint 轉成 LeRobot 的 policy 目
+錄，可以直接用 `--policy.path` 載入：
+
+```bash
+uv run python -m lerobot_policy_openvla_oft.convert_checkpoint \
+    --repo-id moojink/openvla-7b-oft-finetuned-libero-spatial \
+    --output-dir outputs/checkpoints/libero-spatial
+```
+
+`outputs/` 已加入 `.gitignore`。腳本只會下載需要的檔案（每個 checkpoint 約
+15.5 GB）到 Hugging Face cache，並輸出約 15 GB 的 bfloat16 權重與 processor
+pipeline。
+
+釋出的 checkpoint：
+
+| Repository                                                       | 訓練資料                 |
+| ---------------------------------------------------------------- | ------------------------ |
+| `moojink/openvla-7b-oft-finetuned-libero-spatial`                | LIBERO-Spatial           |
+| `moojink/openvla-7b-oft-finetuned-libero-object`                 | LIBERO-Object            |
+| `moojink/openvla-7b-oft-finetuned-libero-goal`                   | LIBERO-Goal              |
+| `moojink/openvla-7b-oft-finetuned-libero-10`                     | LIBERO-10（LIBERO-Long） |
+| `moojink/openvla-7b-oft-finetuned-libero-spatial-object-goal-10` | 四個 suite 合併          |
+
+每個釋出檔案的轉換方式：
+
+| 釋出檔案                                | 內容                                                            | 轉換方式                                                                                     |
+| --------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `model-0000{1..4}-of-00004.safetensors` | Vision backbone、vision projector 與 Llama-2，LoRA 權重已經合併 | 依下表重新命名 key；捨棄不會用到的權重                                                       |
+| `action_head--*.pt`                     | L1 regression action head（§6）                                 | 依下表重新命名 key                                                                           |
+| `proprio_projector--*.pt`               | Proprio projector（§3）                                         | 移除 `module.` 前綴                                                                          |
+| `dataset_statistics.json`               | `q01`、`q99` 與 action 的 `mask`                                | 轉成 `observation.state` 與 `action` 的 LeRobot 統計值；mask 轉成 `action_norm_mask`（§8.2） |
+| `lora_adapter/`                         | 未合併的 LoRA 權重                                              | 不需要，因為模型權重已經包含它們                                                             |
+
+Key 對應：
+
+| 釋出的 key                                                                | 本專案                                               | 原因                             |
+| ------------------------------------------------------------------------- | ---------------------------------------------------- | -------------------------------- |
+| `vision_backbone.featurizer.*`                                            | `model.vision.dinov2.vit.*`                          | §2                               |
+| `vision_backbone.fused_featurizer.*`                                      | `model.vision.siglip.vit.*`                          | §2                               |
+| `*.ls1.scale_factor`、`*.ls2.scale_factor`                                | `*.ls1.gamma`、`*.ls2.gamma`                         | timm 的 LayerScale 名稱（§2）    |
+| `projector.*`                                                             | `model.vision_projector.*`                           | §3                               |
+| `language_model.model.*`                                                  | `model.llm.model.*`                                  | §4                               |
+| `module.*`（proprio projector）                                           | `model.proprio_projector.*`                          | §3                               |
+| `module.model.layer_norm1`、`fc1`                                         | `model.action_head.input_norm`、`input_proj`         | §6                               |
+| `module.model.mlp_resnet_blocks.N.ffn.0`、`ffn.1`                         | `model.action_head.blocks.N.norm`、`blocks.N.linear` | §6                               |
+| `module.model.layer_norm2`、`fc2`                                         | `model.action_head.output_norm`、`output_proj`       | §6                               |
+| `language_model.lm_head.weight`                                           | 捨棄                                                 | 不使用 language-model head（§4） |
+| `vision_backbone.featurizer.blocks.23.*`、`.norm.*`                       | 捨棄                                                 | DINOv2 中不會用到的層（§2）      |
+| `vision_backbone.fused_featurizer.blocks.26.*`、`.norm.*`、`.attn_pool.*` | 捨棄                                                 | SigLIP 中不會用到的層（§2）      |
+
+隨每個 checkpoint 寫出的 configuration 對齊 LeRobot 的 LIBERO 環境：第三人稱相機
+`observation.images.image` 在前、手腕相機 `observation.images.image2` 在後，與原
+始實作的順序相同（`prismatic/vla/datasets/rlds/oxe/configs.py:645-651`），接著是
+8 維的 `observation.state` 與 7 維的 `action`。
+
+驗證方式：
+
+- **嚴格載入。** `load_released_weights` 會對應每一個釋出的 key，並以
+  `strict=True` 載入。只有上表列為捨棄的權重可以剩下；其他任何對應不到或缺少的
+  key 都會報錯。
+- **離線 key 檢查。** 以釋出的 `model.safetensors.index.json` 檢查，剩下的 981 個
+  key 涵蓋本專案全部 938 個 vision、projector 與 language model 參數，另外 43 個正
+  好是被移除的 vision 層。
+- **Test。** `tests/test_convert_checkpoint.py` 從小型模型產生釋出格式的
+  state dict，再轉換回來，要求每個值完全相同；另外也測試未知 key 與缺少 key 的失
+  敗情況。
