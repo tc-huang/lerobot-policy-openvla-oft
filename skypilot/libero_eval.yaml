@@ -7,8 +7,15 @@ name: openvla-oft-libero-eval
 
 resources:
   infra: runpod
-  accelerators: L40:1
   disk_size: 100
+  # Tried in order. Converting a checkpoint peaks at about 38 GB of host memory,
+  # so GPUs on hosts with more RAM come first (L40 125 GB, L40S 62 GB,
+  # RTX A6000 50 GB, A40 48 GB).
+  ordered:
+    - accelerators: L40:1
+    - accelerators: L40S:1
+    - accelerators: RTXA6000:1
+    - accelerators: A40:1
 
 workdir: .
 
