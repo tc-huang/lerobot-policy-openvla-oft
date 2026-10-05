@@ -35,6 +35,7 @@ class OpenVLAOFTConfig(PreTrainedConfig):
         normalization_mapping: Normalization mode per feature type. State and action
             are mapped from their [q01, q99] range to [-1, 1].
         image_size: Square input resolution of the vision backbone.
+        tokenizer_name: Hugging Face repository of the Llama-2 tokenizer used for prompts.
         dtype: Weight dtype of the network; any dtype other than float32 also runs
             the forward pass under autocast to that dtype.
         proprio_projector_fp32: Keep the proprio projector weights in float32.
@@ -59,6 +60,7 @@ class OpenVLAOFTConfig(PreTrainedConfig):
     )
 
     image_size: int = 224
+    tokenizer_name: str = "openvla/openvla-7b"
 
     dtype: str = "bfloat16"
     proprio_projector_fp32: bool = True

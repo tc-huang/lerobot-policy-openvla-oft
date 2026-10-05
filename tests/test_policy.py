@@ -1,11 +1,24 @@
+from functools import partial
+
 import pytest
 import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.policies.factory import get_policy_class
-from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS, OBS_STATE
+from lerobot.utils.constants import (
+    ACTION,
+    OBS_IMAGES,
+    OBS_LANGUAGE_ATTENTION_MASK,
+    OBS_LANGUAGE_TOKENS,
+    OBS_STATE,
+)
 from tiny_models import TINY_IMAGE_SIZE, TINY_LLAMA, TINY_VIT
 
-from lerobot_policy_openvla_oft import OpenVLAOFTConfig, OpenVLAOFTPolicy, modeling_openvla_oft
+from lerobot_policy_openvla_oft import (
+    OpenVLAOFTConfig,
+    OpenVLAOFTPolicy,
+    make_openvla_oft_pre_post_processors,
+    modeling_openvla_oft,
+)
 from lerobot_policy_openvla_oft.language_model import BidirectionalLlama, openvla_llama_config
 from lerobot_policy_openvla_oft.model import OpenVLAOFT
 from lerobot_policy_openvla_oft.vision_backbone import FusedVisionBackbone
@@ -14,12 +27,12 @@ CHUNK_SIZE, ACTION_DIM, STATE_DIM, BATCH_SIZE = 4, 3, 5, 2
 IMAGE_KEYS = (f"{OBS_IMAGES}.image", f"{OBS_IMAGES}.wrist_image")
 
 
-def build_tiny_model(config):
+def build_tiny_model(config, **llama_overrides):
     torch.manual_seed(0)
     state = config.robot_state_feature
     return OpenVLAOFT(
         vision=FusedVisionBackbone(TINY_IMAGE_SIZE, **TINY_VIT),
-        llm=BidirectionalLlama(openvla_llama_config(**TINY_LLAMA)),
+        llm=BidirectionalLlama(openvla_llama_config(**(TINY_LLAMA | llama_overrides))),
         chunk_size=config.chunk_size,
         action_dim=config.action_feature.shape[0],
         proprio_dim=state.shape[0] if state is not None else None,
@@ -137,3 +150,19 @@ def test_save_and_load_round_trip(tmp_path):
 
     torch.testing.assert_close(loaded.predict_action_chunk(batch), policy.predict_action_chunk(batch))
     assert {p.dtype for p in loaded.model.proprio_projector.parameters()} == {torch.float32}
+
+
+def test_accepts_preprocessor_output(monkeypatch):
+    monkeypatch.setattr(modeling_openvla_oft, "build_model", partial(build_tiny_model, vocab_size=32064))
+    config = make_config()
+    stats = {"q01": torch.tensor(-1.0), "q99": torch.tensor(1.0)}
+    preprocessor, postprocessor = make_openvla_oft_pre_post_processors(
+        config, {OBS_STATE: stats, ACTION: stats}
+    )
+    policy = OpenVLAOFTPolicy(config).eval()
+    observation = {key: torch.rand(3, TINY_IMAGE_SIZE, TINY_IMAGE_SIZE) for key in IMAGE_KEYS}
+    observation |= {OBS_STATE: torch.zeros(STATE_DIM), "task": "Open the drawer"}
+
+    action = postprocessor(policy.select_action(preprocessor(observation)))
+
+    assert action.shape == (1, ACTION_DIM)

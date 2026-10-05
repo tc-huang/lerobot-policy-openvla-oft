@@ -295,3 +295,54 @@ Policy 讀取以下 batch key，全部由 preprocessor 產生：
   短暫需要約 30 GB 的主機記憶體。這點會在 checkpoint 轉換時一併處理。
 - **測試。** `build_model` 是唯一知道完整尺寸架構的地方。Test 會把它換成小型網
   路，因此 configuration 中沒有只為測試而設的欄位。
+
+### 8. Processor
+
+`make_openvla_oft_pre_post_processors`（`processor_openvla_oft.py`）負責建立
+policy 前後的兩條 LeRobot pipeline。Preprocessor 把原始觀測（相機影像、機器人狀
+態與任務字串）轉成 §7 所描述的 batch；postprocessor 則把 policy 輸出的正規化
+action 轉回機器人的 action。以下各小節分別說明其中一個部分。
+
+#### 8.1 Prompt 與 tokenize
+
+任務描述會先轉成小寫，套入 OpenVLA 的 prompt 模板，再用 OpenVLA 的 Llama-2
+tokenizer 轉成 token：
+
+```text
+In: What action should the robot take to {task}?\nOut: ␣
+```
+
+模板結尾有一個空格（以 `␣` 表示）。Llama-2 的 SentencePiece tokenizer 會把這個
+結尾空格轉成 token `▁`（id 29871）。原始實作在訓練時把 prompt 與 action 字串一起
+tokenize，這個 token 同樣出現在 `Out:` 與第一個 action token 之間；推論時則是組出
+不含空格的 prompt，再手動補上 id 29871。在模板中保留這個空格，只要一般的
+tokenizer 呼叫就能同時重現這兩種情況。
+
+| 設定                      | 值                                                                     | Config 欄位                              | 來源                                                                                                                                                                                 |
+| ------------------------- | ---------------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Prompt 模板               | `In: What action should the robot take to {task}?\nOut: `              | （固定）                                 | 原 repo：訓練 `prismatic/vla/datasets/datasets.py:56` 搭配 `prismatic/models/backbones/llm/prompting/base_prompter.py:36`，推論 `experiments/robot/openvla_utils.py:757`；論文未提及 |
+| 任務大小寫                | 轉成小寫                                                               | （固定）                                 | 原 repo：訓練 `prismatic/vla/datasets/datasets.py:40`、推論 `experiments/robot/openvla_utils.py:757`                                                                                 |
+| 結尾的 `▁` token（29871） | 由結尾空格產生                                                         | （固定）                                 | 原 repo：推論時在 `prismatic/extern/hf/modeling_prismatic.py:972-975` 中手動補上                                                                                                     |
+| Tokenizer                 | Llama-2 SentencePiece tokenizer，加上 OpenVLA 的 pad token（id 32000） | `tokenizer_name`（`openvla/openvla-7b`） | 原 repo：釋出 checkpoint 中的 `tokenizer.json`                                                                                                                                       |
+| BOS                       | 由 tokenizer 加上（id 1）                                              | （固定）                                 | 原 repo：`prismatic/vla/datasets/datasets.py:63` 中的 `add_special_tokens=True`                                                                                                      |
+| Padding                   | 右側，補到 batch 中最長的 prompt                                       | （固定）                                 | 本專案；§5 會把 padding 移到 action placeholder 之後                                                                                                                                 |
+
+驗證方式：用原始環境（`transformers` 4.40.1）與本專案的環境（`transformers`
+5.5.4）分別 tokenize 同一個 LIBERO-Spatial 任務的 prompt，兩者的 token id 完全相
+同，並由 test `tests/test_processor.py::test_tokens_match_original_tokenizer` 固定下
+來。這些 id 也與原始實作在訓練時組出的序列一致（直到第一個 action token 之前）。
+
+實作說明：
+
+- **兩個小 step。** `OpenVLAPromptProcessorStep` 只負責組 prompt，
+  `OpenVLATokenizerProcessorStep` 只負責 tokenize。兩者都註冊在 LeRobot 的
+  `ProcessorStepRegistry`，因此隨 checkpoint 存下的 pipeline
+  （`policy_preprocessor.json`）會記錄它們，之後可以重新載入。
+- **為什麼要自訂 tokenizer step。** LeRobot 的 `TokenizerProcessorStep` 用
+  `AutoTokenizer` 載入 tokenizer。對 OpenVLA 的 repository，`AutoTokenizer` 會讀
+  取 `config.json`，在 `auto_map` 中發現 OpenVLA 的自訂模型程式碼，然後停下來詢問
+  是否執行。這個子類別改成直接載入 `LlamaTokenizerFast`，不需要任何自訂程式碼；
+  其餘行為（包括 padding 與存檔）都直接繼承。
+- **與網路之間的約定。** 網路（§5）要求每個 prompt 以 BOS 開頭、右側 padding，並
+  附上 attention mask。Test `tests/test_policy.py::test_accepts_preprocessor_output`
+  會讓真正的 preprocessor 輸出直接進入 policy，確保兩邊的約定一致。

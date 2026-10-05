@@ -332,3 +332,61 @@ Notes:
 - **Testing.** `build_model` is the only place that knows the full-size
   architecture. Tests replace it with a tiny network, so the configuration
   contains no test-only fields.
+
+### 8. Processor
+
+`make_openvla_oft_pre_post_processors` (`processor_openvla_oft.py`) builds the
+two LeRobot pipelines around the policy. The preprocessor turns a raw
+observation (camera images, robot state, and the task string) into the batch
+described in §7; the postprocessor turns the policy's normalized actions back
+into robot actions. Each subsection below covers one part.
+
+#### 8.1 Prompt and tokenization
+
+The task description is lowercased and wrapped in OpenVLA's prompt template,
+then tokenized with OpenVLA's Llama-2 tokenizer:
+
+```text
+In: What action should the robot take to {task}?\nOut: ␣
+```
+
+The template ends with a space (shown as `␣`). Llama-2's SentencePiece
+tokenizer turns that trailing space into the token `▁` (id 29871). During
+training, the original tokenizes the prompt and the action string together,
+and this same token appears between `Out:` and the first action token. At
+inference, the original builds the prompt without the space and appends id
+29871 by hand. Keeping the space in the template reproduces both cases with a
+plain tokenizer call.
+
+| Setting                    | Value                                                               | Config field                            | Source                                                                                                                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prompt template            | `In: What action should the robot take to {task}?\nOut: `           | (fixed)                                 | Repo: training `prismatic/vla/datasets/datasets.py:56` with `prismatic/models/backbones/llm/prompting/base_prompter.py:36`, inference `experiments/robot/openvla_utils.py:757`; not stated in the paper |
+| Task casing                | Lowercased                                                          | (fixed)                                 | Repo: training `prismatic/vla/datasets/datasets.py:40`, inference `experiments/robot/openvla_utils.py:757`                                                                                              |
+| Trailing `▁` token (29871) | Produced by the trailing space                                      | (fixed)                                 | Repo: inference appends it by hand in `prismatic/extern/hf/modeling_prismatic.py:972-975`                                                                                                               |
+| Tokenizer                  | Llama-2 SentencePiece tokenizer with OpenVLA's pad token (id 32000) | `tokenizer_name` (`openvla/openvla-7b`) | Repo: `tokenizer.json` in the released checkpoints                                                                                                                                                      |
+| BOS                        | Added by the tokenizer (id 1)                                       | (fixed)                                 | Repo: `add_special_tokens=True` in `prismatic/vla/datasets/datasets.py:63`                                                                                                                              |
+| Padding                    | Right side, to the longest prompt in the batch                      | (fixed)                                 | This port; §5 moves padding behind the action placeholders                                                                                                                                              |
+
+How this was verified: the prompt for a LIBERO-Spatial task was tokenized with
+both the original stack (`transformers` 4.40.1) and this port's stack
+(`transformers` 5.5.4). The token ids are identical, and the test
+`tests/test_processor.py::test_tokens_match_original_tokenizer` pins them.
+The ids also match the training sequence the original builds, up to the first
+action token.
+
+Implementation notes:
+
+- **Two small steps.** `OpenVLAPromptProcessorStep` only formats the prompt,
+  and `OpenVLATokenizerProcessorStep` only tokenizes it. Both are registered
+  with LeRobot's `ProcessorStepRegistry`, so the pipeline saved next to a
+  checkpoint (`policy_preprocessor.json`) records them and can be reloaded.
+- **Why a custom tokenizer step.** LeRobot's `TokenizerProcessorStep` loads
+  tokenizers with `AutoTokenizer`. For OpenVLA repositories, `AutoTokenizer`
+  reads `config.json`, finds OpenVLA's custom model code in `auto_map`, and
+  stops to ask whether to run it. The subclass loads `LlamaTokenizerFast`
+  directly, which needs no custom code; everything else, including padding
+  and serialization, is inherited.
+- **Contract with the network.** The network (§5) requires that every prompt
+  starts with BOS, is right-padded, and comes with an attention mask. The
+  test `tests/test_policy.py::test_accepts_preprocessor_output` runs the real
+  preprocessor output through the policy to keep both sides in agreement.
