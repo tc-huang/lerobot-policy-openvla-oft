@@ -1,0 +1,55 @@
+# Converts a released OpenVLA-OFT LIBERO checkpoint and evaluates it with lerobot-eval.
+#
+#   sky launch -c openvla-oft-eval skypilot/libero_eval.yaml -i 15 --down \
+#       --env SUITE=libero_spatial --env TASK_IDS="[0]" --env N_EPISODES=2 --env BATCH_SIZE=2
+
+name: openvla-oft-libero-eval
+
+resources:
+  infra: runpod
+  accelerators: L40:1
+  disk_size: 100
+
+workdir: .
+
+envs:
+  CHECKPOINT: moojink/openvla-7b-oft-finetuned-libero-spatial
+  SUITE: libero_spatial
+  # Original limits: libero_spatial 220, libero_object 280, libero_goal 300, libero_10 520.
+  EPISODE_LENGTH: "220"
+  N_EPISODES: "50"
+  BATCH_SIZE: "10"
+  TASK_IDS: ""
+  SEED: "7"
+  MUJOCO_GL: egl
+
+setup: |
+  set -euo pipefail
+  SUDO=$(command -v sudo || true)
+  $SUDO apt-get update -qq
+  $SUDO apt-get install -y -qq libegl1 libgl1 libglib2.0-0 libosmesa6 ffmpeg
+  command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+  uv sync --extra libero
+
+run: |
+  set -euo pipefail
+  export PATH="$HOME/.local/bin:$PATH"
+  CHECKPOINT_DIR="outputs/checkpoints/$(basename "$CHECKPOINT")"
+  if [ ! -f "$CHECKPOINT_DIR/model.safetensors" ]; then
+    uv run --extra libero python -m lerobot_policy_openvla_oft.convert_checkpoint \
+      --repo-id "$CHECKPOINT" --output-dir "$CHECKPOINT_DIR"
+  fi
+  uv run --extra libero lerobot-eval \
+    --policy.path="$CHECKPOINT_DIR" \
+    --policy.device=cuda \
+    --env.type=libero \
+    --env.task="$SUITE" \
+    ${TASK_IDS:+--env.task_ids="$TASK_IDS"} \
+    --env.observation_height=256 \
+    --env.observation_width=256 \
+    --env.episode_length="$EPISODE_LENGTH" \
+    --eval.n_episodes="$N_EPISODES" \
+    --eval.batch_size="$BATCH_SIZE" \
+    --seed="$SEED" \
+    --output_dir="outputs/eval/$SUITE-seed$SEED-$(date +%Y%m%d-%H%M%S)"

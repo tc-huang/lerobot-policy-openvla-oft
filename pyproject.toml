@@ -13,6 +13,12 @@ dependencies = [
     "transformers>=5.4.0,<5.6.0",
 ]
 
+[project.optional-dependencies]
+libero = [
+    "lerobot[libero]>=0.6.1",
+    "mujoco>=3.0.0,<3.4 ; sys_platform == 'linux'",
+]
+
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
 build-backend = "uv_build"
