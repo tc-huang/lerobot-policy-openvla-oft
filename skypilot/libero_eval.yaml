@@ -32,7 +32,7 @@ envs:
 
 setup: |
   set -euo pipefail
-  SUDO=$(command -v sudo || true)
+  SUDO=$([ "$(id -u)" -eq 0 ] || echo sudo)
   $SUDO apt-get update -qq
   $SUDO apt-get install -y -qq libegl1 libgl1 libglib2.0-0 libosmesa6 ffmpeg
   command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
