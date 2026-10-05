@@ -80,4 +80,4 @@ repos:
     hooks:
       - id: mypy
         args: [--config-file=pyproject.toml]
-        exclude: ^test/
+        exclude: ^tests/

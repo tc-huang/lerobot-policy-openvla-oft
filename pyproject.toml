@@ -49,7 +49,7 @@ line-ending = "auto"
 docstring-code-format = true
 
 [tool.bandit]
-exclude_dirs = ["test", "third_party"]
+exclude_dirs = ["tests", "third_party"]
 skips = ["B101", "B311", "B404", "B603", "B615"]
 
 [tool.typos]
@@ -68,4 +68,8 @@ exclude = ["^third_party/"]
 [dependency-groups]
 dev = [
     "pre-commit>=3.7.0,<5.0.0",
+    "pytest>=8.1.0,<10.0.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
