@@ -660,9 +660,22 @@ it after unnormalization.
 
 #### Results
 
-**LIBERO-Spatial, `moojink/openvla-7b-oft-finetuned-libero-spatial`: 98.0%
-(490/500)**, against 97.6% in Paper Table I. This is a single seed (`--seed=7`);
-the paper averages three.
+All four suites were evaluated with the released single-suite checkpoints, one
+seed each (`--seed=7`, 500 episodes per suite). The paper averages three seeds.
+
+| Suite          | Checkpoint       | This port (%) | Paper Table I (%) | Difference |
+| -------------- | ---------------- | ------------- | ----------------- | ---------- |
+| LIBERO-Spatial | `libero-spatial` | 98.0          | 97.6              | +0.4       |
+| LIBERO-Object  | `libero-object`  | 98.0          | 98.4              | -0.4       |
+| LIBERO-Goal    | `libero-goal`    | 97.2          | 97.9              | -0.7       |
+| LIBERO-Long    | `libero-10`      | 94.2          | 94.5              | -0.3       |
+| **Average**    |                  | **96.85**     | **97.1**          | **-0.25**  |
+
+With 500 episodes, the 95% confidence interval of a single success rate near
+97% is about ±1.5 points, so every suite is within the sampling error of the
+paper.
+
+**LIBERO-Spatial** (`moojink/openvla-7b-oft-finetuned-libero-spatial`)
 
 | Task | Instruction                                                                              | Success             |
 | ---- | ---------------------------------------------------------------------------------------- | ------------------- |
@@ -678,25 +691,81 @@ the paper averages three.
 | 9    | pick up the black bowl on the wooden cabinet and place it on the plate                   | 50/50               |
 |      | **Total**                                                                                | **490/500 (98.0%)** |
 
+**LIBERO-Object** (`moojink/openvla-7b-oft-finetuned-libero-object`)
+
+| Task | Instruction                                              | Success             |
+| ---- | -------------------------------------------------------- | ------------------- |
+| 0    | pick up the alphabet soup and place it in the basket     | 49/50               |
+| 1    | pick up the cream cheese and place it in the basket      | 50/50               |
+| 2    | pick up the salad dressing and place it in the basket    | 49/50               |
+| 3    | pick up the bbq sauce and place it in the basket         | 49/50               |
+| 4    | pick up the ketchup and place it in the basket           | 50/50               |
+| 5    | pick up the tomato sauce and place it in the basket      | 50/50               |
+| 6    | pick up the butter and place it in the basket            | 49/50               |
+| 7    | pick up the milk and place it in the basket              | 48/50               |
+| 8    | pick up the chocolate pudding and place it in the basket | 46/50               |
+| 9    | pick up the orange juice and place it in the basket      | 50/50               |
+|      | **Total**                                                | **490/500 (98.0%)** |
+
+**LIBERO-Goal** (`moojink/openvla-7b-oft-finetuned-libero-goal`)
+
+| Task | Instruction                                 | Success             |
+| ---- | ------------------------------------------- | ------------------- |
+| 0    | open the middle drawer of the cabinet       | 49/50               |
+| 1    | put the bowl on the stove                   | 47/50               |
+| 2    | put the wine bottle on top of the cabinet   | 47/50               |
+| 3    | open the top drawer and put the bowl inside | 43/50               |
+| 4    | put the bowl on top of the cabinet          | 50/50               |
+| 5    | push the plate to the front of the stove    | 50/50               |
+| 6    | put the cream cheese in the bowl            | 50/50               |
+| 7    | turn on the stove                           | 50/50               |
+| 8    | put the bowl on the plate                   | 50/50               |
+| 9    | put the wine bottle on the rack             | 50/50               |
+|      | **Total**                                   | **486/500 (97.2%)** |
+
+**LIBERO-Long** (`moojink/openvla-7b-oft-finetuned-libero-10`)
+
+| Task | Instruction                                                                             | Success             |
+| ---- | --------------------------------------------------------------------------------------- | ------------------- |
+| 0    | put both the alphabet soup and the tomato sauce in the basket                           | 46/50               |
+| 1    | put both the cream cheese box and the butter in the basket                              | 49/50               |
+| 2    | turn on the stove and put the moka pot on it                                            | 50/50               |
+| 3    | put the black bowl in the bottom drawer of the cabinet and close it                     | 48/50               |
+| 4    | put the white mug on the left plate and put the yellow and white mug on the right plate | 47/50               |
+| 5    | pick up the book and place it in the back compartment of the caddy                      | 50/50               |
+| 6    | put the white mug on the plate and put the chocolate pudding to the right of the plate  | 45/50               |
+| 7    | put both the alphabet soup and the cream cheese box in the basket                       | 49/50               |
+| 8    | put both moka pots on the stove                                                         | 39/50               |
+| 9    | put the yellow and white mug in the microwave and close it                              | 48/50               |
+|      | **Total**                                                                               | **471/500 (94.2%)** |
+
 Run details (2026-10-05):
 
-| Item       | Value                                                                                                                                                                           |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Command    | `sky launch -c openvla-oft-eval skypilot/libero_eval.yaml -i 15 --down` for a 2-episode smoke test, then `sky exec openvla-oft-eval skypilot/libero_eval.yaml` for the full run |
-| Code       | `db72470`                                                                                                                                                                       |
-| Machine    | RunPod L40S (48 GB), 12 vCPUs, 62 GB RAM, region EU-NL-1, $1.09/hour list price; no L40 was available in any region                                                             |
-| Software   | Python 3.12, PyTorch 2.11.0+cu130, transformers 5.5.4, LeRobot 0.6.1, MuJoCo 3.3.7, robosuite 1.4.0, `MUJOCO_GL=egl`                                                            |
-| Evaluation | 500 episodes, 10 environments in parallel (`--eval.batch_size=10`), 256 × 256 rendering, 220-step limit                                                                         |
+| Item       | Value                                                                                                                                                                                   |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Commands   | `sky launch -c openvla-oft-eval skypilot/libero_eval.yaml -i 15 --down` with a 2-episode smoke test, then one `sky exec` per suite with `CHECKPOINT`, `SUITE`, and `EPISODE_LENGTH` set |
+| Code       | `db72470` (Spatial), `857fd66` (Object, Goal, Long; only the SkyPilot task changed)                                                                                                     |
+| Machine    | RunPod L40S (48 GB), 12 vCPUs, 62 GB RAM, region EU-NL-1, $1.09/hour list price; no L40 was available in any region                                                                     |
+| Software   | Python 3.12, PyTorch 2.11.0+cu130, transformers 5.5.4, LeRobot 0.6.1, MuJoCo 3.3.7, robosuite 1.4.0, `MUJOCO_GL=egl`                                                                    |
+| Evaluation | 10 environments in parallel (`--eval.batch_size=10`), 256 × 256 rendering, original episode limits                                                                                      |
 
-| Stage                                                          | Time                                                                                                                    |
-| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Provisioning the L40S                                          | About 2 minutes                                                                                                         |
-| Setup on a fresh machine (`apt-get`, `uv sync --extra libero`) | About 1 minute                                                                                                          |
-| Checkpoint download from the Hugging Face Hub (15.5 GB)        | 74 seconds                                                                                                              |
-| Checkpoint conversion                                          | About 2 minutes                                                                                                         |
-| Smoke test (task 0, 2 episodes)                                | 53 seconds of evaluation, 3 minutes for the whole job                                                                   |
-| Full LIBERO-Spatial evaluation                                 | 26.1 minutes of evaluation (3.1 seconds per episode with 10 parallel environments), 28.3 minutes for the whole job      |
-| Total machine time                                             | About 62 minutes, including two setup fixes and the 15-minute idle period before autostop; about $1.1 at the list price |
+| Suite          | Episode limit | Evaluation time | Per episode (10 in parallel) |
+| -------------- | ------------- | --------------- | ---------------------------- |
+| LIBERO-Spatial | 220           | 26.1 min        | 3.1 s                        |
+| LIBERO-Object  | 280           | 30.8 min        | 3.7 s                        |
+| LIBERO-Goal    | 300           | 27.5 min        | 3.3 s                        |
+| LIBERO-Long    | 520           | 57.5 min        | 6.9 s                        |
 
-The two lowest tasks are 4 (94%) and 5 (90%). Task 5 is the one affected by
-lerobot#4390; this run used MuJoCo 3.3.7, below the affected 3.4 range.
+| Stage                                                                  | Time                                                                                                                                                                                    |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provisioning the L40S                                                  | About 2 minutes                                                                                                                                                                         |
+| Setup on a fresh machine (`apt-get`, `uv sync --extra libero`)         | About 1 minute                                                                                                                                                                          |
+| Checkpoint download from the Hugging Face Hub (15.5 GB)                | About 1 to 2 minutes per checkpoint                                                                                                                                                     |
+| Checkpoint conversion                                                  | About 2 minutes per checkpoint                                                                                                                                                          |
+| Whole job per suite, including download, conversion, and model loading | Spatial 28.3 min, Object 35.4 min, Goal 32.0 min, Long 62.0 min                                                                                                                         |
+| Total machine time                                                     | About 3 hours 4 minutes (15:30 to 18:34 UTC), including two setup fixes and a 2-episode smoke test; about $3.3 at the list price. The cluster was torn down right after the last suite. |
+
+The lowest tasks are LIBERO-Long task 8 (78%, two moka pots on the stove),
+LIBERO-Goal task 3 (86%), and LIBERO-Spatial task 5 (90%). Spatial task 5 is
+the one affected by lerobot#4390; this run used MuJoCo 3.3.7, below the
+affected 3.4 range.

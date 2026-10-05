@@ -596,43 +596,110 @@ suite 共 500 次試驗。
 
 #### 結果
 
-**LIBERO-Spatial，`moojink/openvla-7b-oft-finetuned-libero-spatial`：98.0%
-（490/500）**，論文 Table I 為 97.6%。本次只跑一個 seed（`--seed=7`），論文則是
-三個 seed 的平均。
+四個 suite 都以釋出的單一 suite checkpoint 評估，各跑一個 seed（`--seed=7`，每個
+suite 500 個 episode）。論文則是三個 seed 的平均。
 
-| 任務 | 指令                                                                                     | 成功                 |
-| ---- | ---------------------------------------------------------------------------------------- | -------------------- |
-| 0    | pick up the black bowl between the plate and the ramekin and place it on the plate       | 50/50                |
-| 1    | pick up the black bowl next to the ramekin and place it on the plate                     | 49/50                |
-| 2    | pick up the black bowl from table center and place it on the plate                       | 50/50                |
-| 3    | pick up the black bowl on the cookie box and place it on the plate                       | 50/50                |
-| 4    | pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate | 47/50                |
-| 5    | pick up the black bowl on the ramekin and place it on the plate                          | 45/50                |
-| 6    | pick up the black bowl next to the cookie box and place it on the plate                  | 50/50                |
-| 7    | pick up the black bowl on the stove and place it on the plate                            | 49/50                |
-| 8    | pick up the black bowl next to the plate and place it on the plate                       | 50/50                |
-| 9    | pick up the black bowl on the wooden cabinet and place it on the plate                   | 50/50                |
-|      | **合計**                                                                                 | **490/500（98.0%）** |
+| Suite          | Checkpoint       | 本專案（%） | 論文 Table I（%） | 差距      |
+| -------------- | ---------------- | ----------- | ----------------- | --------- |
+| LIBERO-Spatial | `libero-spatial` | 98.0        | 97.6              | +0.4      |
+| LIBERO-Object  | `libero-object`  | 98.0        | 98.4              | -0.4      |
+| LIBERO-Goal    | `libero-goal`    | 97.2        | 97.9              | -0.7      |
+| LIBERO-Long    | `libero-10`      | 94.2        | 94.5              | -0.3      |
+| **平均**       |                  | **96.85**   | **97.1**          | **-0.25** |
+
+以 500 個 episode 計，成功率在 97% 附近時，單一數字的 95% 信賴區間約為 ±1.5 個
+百分點，因此每個 suite 都在論文數字的抽樣誤差範圍內。
+
+**LIBERO-Spatial** (`moojink/openvla-7b-oft-finetuned-libero-spatial`)
+
+| 任務 | 指令                                                                                     | 成功                |
+| ---- | ---------------------------------------------------------------------------------------- | ------------------- |
+| 0    | pick up the black bowl between the plate and the ramekin and place it on the plate       | 50/50               |
+| 1    | pick up the black bowl next to the ramekin and place it on the plate                     | 49/50               |
+| 2    | pick up the black bowl from table center and place it on the plate                       | 50/50               |
+| 3    | pick up the black bowl on the cookie box and place it on the plate                       | 50/50               |
+| 4    | pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate | 47/50               |
+| 5    | pick up the black bowl on the ramekin and place it on the plate                          | 45/50               |
+| 6    | pick up the black bowl next to the cookie box and place it on the plate                  | 50/50               |
+| 7    | pick up the black bowl on the stove and place it on the plate                            | 49/50               |
+| 8    | pick up the black bowl next to the plate and place it on the plate                       | 50/50               |
+| 9    | pick up the black bowl on the wooden cabinet and place it on the plate                   | 50/50               |
+|      | **合計**                                                                                 | **490/500 (98.0%)** |
+
+**LIBERO-Object** (`moojink/openvla-7b-oft-finetuned-libero-object`)
+
+| 任務 | 指令                                                     | 成功                |
+| ---- | -------------------------------------------------------- | ------------------- |
+| 0    | pick up the alphabet soup and place it in the basket     | 49/50               |
+| 1    | pick up the cream cheese and place it in the basket      | 50/50               |
+| 2    | pick up the salad dressing and place it in the basket    | 49/50               |
+| 3    | pick up the bbq sauce and place it in the basket         | 49/50               |
+| 4    | pick up the ketchup and place it in the basket           | 50/50               |
+| 5    | pick up the tomato sauce and place it in the basket      | 50/50               |
+| 6    | pick up the butter and place it in the basket            | 49/50               |
+| 7    | pick up the milk and place it in the basket              | 48/50               |
+| 8    | pick up the chocolate pudding and place it in the basket | 46/50               |
+| 9    | pick up the orange juice and place it in the basket      | 50/50               |
+|      | **合計**                                                 | **490/500 (98.0%)** |
+
+**LIBERO-Goal** (`moojink/openvla-7b-oft-finetuned-libero-goal`)
+
+| 任務 | 指令                                        | 成功                |
+| ---- | ------------------------------------------- | ------------------- |
+| 0    | open the middle drawer of the cabinet       | 49/50               |
+| 1    | put the bowl on the stove                   | 47/50               |
+| 2    | put the wine bottle on top of the cabinet   | 47/50               |
+| 3    | open the top drawer and put the bowl inside | 43/50               |
+| 4    | put the bowl on top of the cabinet          | 50/50               |
+| 5    | push the plate to the front of the stove    | 50/50               |
+| 6    | put the cream cheese in the bowl            | 50/50               |
+| 7    | turn on the stove                           | 50/50               |
+| 8    | put the bowl on the plate                   | 50/50               |
+| 9    | put the wine bottle on the rack             | 50/50               |
+|      | **合計**                                    | **486/500 (97.2%)** |
+
+**LIBERO-Long** (`moojink/openvla-7b-oft-finetuned-libero-10`)
+
+| 任務 | 指令                                                                                    | 成功                |
+| ---- | --------------------------------------------------------------------------------------- | ------------------- |
+| 0    | put both the alphabet soup and the tomato sauce in the basket                           | 46/50               |
+| 1    | put both the cream cheese box and the butter in the basket                              | 49/50               |
+| 2    | turn on the stove and put the moka pot on it                                            | 50/50               |
+| 3    | put the black bowl in the bottom drawer of the cabinet and close it                     | 48/50               |
+| 4    | put the white mug on the left plate and put the yellow and white mug on the right plate | 47/50               |
+| 5    | pick up the book and place it in the back compartment of the caddy                      | 50/50               |
+| 6    | put the white mug on the plate and put the chocolate pudding to the right of the plate  | 45/50               |
+| 7    | put both the alphabet soup and the cream cheese box in the basket                       | 49/50               |
+| 8    | put both moka pots on the stove                                                         | 39/50               |
+| 9    | put the yellow and white mug in the microwave and close it                              | 48/50               |
+|      | **合計**                                                                                | **471/500 (94.2%)** |
 
 執行細節（2026-10-05）：
 
-| 項目     | 值                                                                                                                                                                                |
-| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 指令     | 先以 `sky launch -c openvla-oft-eval skypilot/libero_eval.yaml -i 15 --down` 跑 2 個 episode 的 smoke test，再以 `sky exec openvla-oft-eval skypilot/libero_eval.yaml` 跑完整評估 |
-| 程式碼   | `db72470`                                                                                                                                                                         |
-| 機器     | RunPod L40S（48 GB）、12 vCPU、62 GB RAM、EU-NL-1 機房，目錄價每小時 $1.09；當時所有機房都沒有 L40                                                                                |
-| 軟體     | Python 3.12、PyTorch 2.11.0+cu130、transformers 5.5.4、LeRobot 0.6.1、MuJoCo 3.3.7、robosuite 1.4.0、`MUJOCO_GL=egl`                                                              |
-| 評估設定 | 500 個 episode、同時 10 個環境（`--eval.batch_size=10`）、256 × 256 渲染、220 步上限                                                                                              |
+| 項目     | 值                                                                                                                                                                                               |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 指令     | 先以 `sky launch -c openvla-oft-eval skypilot/libero_eval.yaml -i 15 --down` 跑 2 個 episode 的 smoke test，再對每個 suite 各執行一次 `sky exec`，設定 `CHECKPOINT`、`SUITE` 與 `EPISODE_LENGTH` |
+| 程式碼   | `db72470`（Spatial）、`857fd66`（Object、Goal、Long；只修改了 SkyPilot 設定）                                                                                                                    |
+| 機器     | RunPod L40S（48 GB）、12 vCPU、62 GB RAM、EU-NL-1 機房，目錄價每小時 $1.09；當時所有機房都沒有 L40                                                                                               |
+| 軟體     | Python 3.12、PyTorch 2.11.0+cu130、transformers 5.5.4、LeRobot 0.6.1、MuJoCo 3.3.7、robosuite 1.4.0、`MUJOCO_GL=egl`                                                                             |
+| 評估設定 | 同時 10 個環境（`--eval.batch_size=10`）、256 × 256 渲染、原始的 episode 長度上限                                                                                                                |
 
-| 階段                                                    | 時間                                                                           |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| 開啟 L40S                                               | 約 2 分鐘                                                                      |
-| 新機器上的 setup（`apt-get`、`uv sync --extra libero`） | 約 1 分鐘                                                                      |
-| 從 Hugging Face Hub 下載 checkpoint（15.5 GB）          | 74 秒                                                                          |
-| 轉換 checkpoint                                         | 約 2 分鐘                                                                      |
-| Smoke test（任務 0，2 個 episode）                      | 評估 53 秒，整個 job 3 分鐘                                                    |
-| 完整 LIBERO-Spatial 評估                                | 評估 26.1 分鐘（同時 10 個環境下每個 episode 3.1 秒），整個 job 28.3 分鐘      |
-| 機器總使用時間                                          | 約 62 分鐘，包含兩次修正 setup 以及自動關機前 15 分鐘的閒置；以目錄價計約 $1.1 |
+| Suite          | Episode 上限 | 評估時間  | 每個 episode（同時 10 個） |
+| -------------- | ------------ | --------- | -------------------------- |
+| LIBERO-Spatial | 220          | 26.1 分鐘 | 3.1 秒                     |
+| LIBERO-Object  | 280          | 30.8 分鐘 | 3.7 秒                     |
+| LIBERO-Goal    | 300          | 27.5 分鐘 | 3.3 秒                     |
+| LIBERO-Long    | 520          | 57.5 分鐘 | 6.9 秒                     |
 
-成功率最低的兩個任務是 4（94%）與 5（90%）。任務 5 正是 lerobot#4390 影響的任務；
-本次使用 MuJoCo 3.3.7，低於受影響的 3.4 以上版本。
+| 階段                                                    | 時間                                                                                                                                             |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 開啟 L40S                                               | 約 2 分鐘                                                                                                                                        |
+| 新機器上的 setup（`apt-get`、`uv sync --extra libero`） | 約 1 分鐘                                                                                                                                        |
+| 從 Hugging Face Hub 下載 checkpoint（15.5 GB）          | 每個 checkpoint 約 1 到 2 分鐘                                                                                                                   |
+| 轉換 checkpoint                                         | 每個 checkpoint 約 2 分鐘                                                                                                                        |
+| 每個 suite 的整個 job（含下載、轉換與載入模型）         | Spatial 28.3 分鐘、Object 35.4 分鐘、Goal 32.0 分鐘、Long 62.0 分鐘                                                                              |
+| 機器總使用時間                                          | 約 3 小時 4 分鐘（15:30 至 18:34 UTC），包含兩次修正 setup 與 2 個 episode 的 smoke test；以目錄價計約 $3.3。最後一個 suite 結束後立即關閉機器。 |
+
+成功率最低的任務是 LIBERO-Long 任務 8（78%，把兩個摩卡壺放上爐子）、LIBERO-Goal
+任務 3（86%）與 LIBERO-Spatial 任務 5（90%）。Spatial 任務 5 正是 lerobot#4390 影
+響的任務；本次使用 MuJoCo 3.3.7，低於受影響的 3.4 以上版本。
