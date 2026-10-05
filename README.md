@@ -582,3 +582,78 @@ How this is verified:
 
 The released `.pt` files were saved from CUDA tensors, so the script loads them
 with `map_location="cpu"`.
+
+### 10. LIBERO evaluation
+
+The converted checkpoints are evaluated with `lerobot-eval` in LeRobot's
+built-in LIBERO environment. The table compares that environment with the
+original evaluation script (`experiments/robot/libero/run_libero_eval.py` and
+`libero_utils.py`) item by item.
+
+| Item                  | Original                                                                                              | LeRobot v0.6.1                                                                                                                          | Handled by                              |
+| --------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| Image rotation        | 180° (`libero_utils.py:36`, `:43`)                                                                    | 180° in `LiberoProcessorStep`                                                                                                           | LeRobot                                 |
+| Cameras               | Third-person, then wrist                                                                              | `image`, then `image2`                                                                                                                  | Conversion config (§9)                  |
+| State (8-dim)         | End-effector position, axis-angle orientation, gripper joint positions (`run_libero_eval.py:257-259`) | Same composition in `LiberoProcessorStep`                                                                                               | LeRobot                                 |
+| Settling              | 10 no-op steps `[0, 0, 0, 0, 0, 0, -1]` (`run_libero_eval.py:318-321`)                                | Same, inside `reset()`                                                                                                                  | LeRobot                                 |
+| Initial states        | The 50 fixed states per task, one per trial (`run_libero_eval.py:227-230`)                            | Each sub-environment cycles through the same fixed states                                                                               | LeRobot                                 |
+| Success               | `done` from `env.step`                                                                                | `done` or `check_success()`                                                                                                             | LeRobot                                 |
+| Action chunking       | Execute all 8 actions, then query again (`run_libero_eval.py:306-344`)                                | Policy action queue                                                                                                                     | Policy (§7)                             |
+| **Gripper action**    | `[0, 1]` → `[-1, 1]`, binarized, negated (`run_libero_eval.py:265-274`)                               | Passed to the env unchanged                                                                                                             | **`OpenVLALiberoGripperProcessorStep`** |
+| **Render resolution** | 256 × 256 (`run_libero_eval.py:116`)                                                                  | 360 × 360 by default                                                                                                                    | **Eval flags**                          |
+| **Episode length**    | Spatial 220, Object 280, Goal 300, Long 520 (`run_libero_eval.py:63-69`)                              | Spatial 280, others identical                                                                                                           | **Eval flag for Spatial**               |
+| **MuJoCo**            | (original setup)                                                                                      | `mujoco >= 3.4` breaks the initial states of LIBERO-Spatial task 5 ([lerobot#4390](https://github.com/huggingface/lerobot/issues/4390)) | **Eval environment**                    |
+| Environment seed      | Fixed `env.seed(0)` (`libero_utils.py:24`)                                                            | Seeded from `--seed` on each reset                                                                                                      | Not matched; minor                      |
+
+**Gripper conversion.** The original data loader stores the gripper action as
+0 (close) to 1 (open), and the released checkpoints predict it on that scale
+(§8.2). LIBERO expects -1 (open) or +1 (close). The original evaluation
+therefore maps the prediction to `[-1, 1]`, takes its sign, and negates it
+(`experiments/robot/robot_utils.py:149-198`). LeRobot only lets X-VLA inject
+LIBERO-specific action processing (`lerobot/envs/factory.py`), so this port
+puts the conversion into the converted checkpoints instead: `convert_checkpoint.py`
+appends `OpenVLALiberoGripperProcessorStep` to their postprocessor. The step
+is part of these LIBERO checkpoints, not of the policy; a policy trained on
+data that already uses LIBERO's convention does not need it.
+
+**Evaluation command.** One suite, matching the original protocol:
+
+```bash
+lerobot-eval \
+    --policy.path=outputs/checkpoints/libero-spatial \
+    --policy.device=cuda \
+    --env.type=libero \
+    --env.task=libero_spatial \
+    --env.observation_height=256 \
+    --env.observation_width=256 \
+    --env.episode_length=220 \
+    --eval.n_episodes=50 \
+    --eval.batch_size=10 \
+    --seed=7
+```
+
+`--env.episode_length` is only needed for LIBERO-Spatial; the other suites
+already use the original limits. `--eval.n_episodes=50` runs each of the 10
+tasks of a suite 50 times, 500 trials per suite like the paper.
+
+**Evaluation environment.** LeRobot's `libero` extra installs only on Linux
+(`hf-libero` is marked `sys_platform == 'linux'`), so evaluation needs a Linux
+machine. Pin `mujoco<3.4` in that environment because of lerobot#4390.
+
+**Targets.** Success rates reported in the paper, each averaged over 500 trials
+per suite and, per the original `LIBERO.md`, over three seeds:
+
+| Checkpoint                     | Spatial | Object | Goal | Long | Average | Source          |
+| ------------------------------ | ------- | ------ | ---- | ---- | ------- | --------------- |
+| One policy per suite           | 97.6    | 98.4   | 97.9 | 94.5 | 97.1    | Paper Table I   |
+| One policy for all four suites | 97.7    | 98.0   | 96.1 | 95.3 | 96.8    | Paper Table XIV |
+
+How close this port must come is decided once results are available. The
+known sources of difference are listed in §7 (inference precision) and §8.3
+(image interpolation).
+
+How this is verified: `tests/test_processor.py` compares
+`OpenVLALiberoGripperProcessorStep` with a transcription of the original
+`normalize_gripper_action` and `invert_gripper_action`, and
+`tests/test_convert_checkpoint.py` checks that the LIBERO postprocessor applies
+it after unnormalization. Running `lerobot-eval` itself has not been done yet.

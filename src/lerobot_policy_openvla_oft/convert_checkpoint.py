@@ -14,6 +14,7 @@ from pathlib import Path
 import torch
 from huggingface_hub import snapshot_download
 from lerobot.configs.types import FeatureType, PolicyFeature
+from lerobot.processor import PolicyProcessorPipeline
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 from safetensors.torch import load_file
 from torch import Tensor
@@ -21,7 +22,7 @@ from torch import Tensor
 from .configuration_openvla_oft import OpenVLAOFTConfig
 from .model import OpenVLAOFT
 from .modeling_openvla_oft import OpenVLAOFTPolicy
-from .processor_openvla_oft import make_openvla_oft_pre_post_processors
+from .processor_openvla_oft import OpenVLALiberoGripperProcessorStep, make_openvla_oft_pre_post_processors
 
 CHECKPOINT_FILES = [
     "model.safetensors.index.json",
@@ -132,6 +133,15 @@ def libero_config(stats: dict[str, dict[str, Tensor]], action_norm_mask: list[bo
     )
 
 
+def libero_processors(
+    config: OpenVLAOFTConfig, stats: dict[str, dict[str, Tensor]]
+) -> tuple[PolicyProcessorPipeline, PolicyProcessorPipeline]:
+    """Policy processors plus the gripper conversion that LIBERO evaluation needs."""
+    preprocessor, postprocessor = make_openvla_oft_pre_post_processors(config, stats)
+    postprocessor.steps = [*postprocessor.steps, OpenVLALiberoGripperProcessorStep()]
+    return preprocessor, postprocessor
+
+
 def convert(repo_id: str, output_dir: Path, revision: str | None = None) -> None:
     checkpoint = Path(snapshot_download(repo_id, revision=revision, allow_patterns=CHECKPOINT_FILES))
     stats, action_norm_mask = convert_dataset_statistics(checkpoint / "dataset_statistics.json")
@@ -150,7 +160,7 @@ def convert(repo_id: str, output_dir: Path, revision: str | None = None) -> None
         torch.load(proprio_projector, map_location="cpu", weights_only=True),
     )
 
-    preprocessor, postprocessor = make_openvla_oft_pre_post_processors(config, stats)
+    preprocessor, postprocessor = libero_processors(config, stats)
     policy.save_pretrained(output_dir)
     preprocessor.save_pretrained(output_dir)
     postprocessor.save_pretrained(output_dir)

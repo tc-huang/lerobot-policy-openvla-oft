@@ -523,3 +523,73 @@ Key 對應：
   測出數值有限、shape 為 `(1, 8, 7)` 的 action chunk。
 
 釋出的 `.pt` 檔是從 CUDA tensor 存下來的，因此腳本以 `map_location="cpu"` 載入。
+
+### 10. LIBERO 評估
+
+轉換後的 checkpoint 以 `lerobot-eval` 在 LeRobot 內建的 LIBERO 環境中評估。下表逐
+項比較該環境與原始評估腳本（`experiments/robot/libero/run_libero_eval.py` 與
+`libero_utils.py`）。
+
+| 項目               | 原始實作                                                                             | LeRobot v0.6.1                                                                                                                    | 負責處理                                |
+| ------------------ | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| 影像旋轉           | 180°（`libero_utils.py:36`、`:43`）                                                  | `LiberoProcessorStep` 旋轉 180°                                                                                                   | LeRobot                                 |
+| 相機               | 第三人稱在前、手腕在後                                                               | `image` 在前、`image2` 在後                                                                                                       | 轉換時的 config（§9）                   |
+| State（8 維）      | End-effector 位置、axis-angle 姿態、gripper 關節位置（`run_libero_eval.py:257-259`） | `LiberoProcessorStep` 以相同方式組成                                                                                              | LeRobot                                 |
+| 等待物體穩定       | 10 步 no-op `[0, 0, 0, 0, 0, 0, -1]`（`run_libero_eval.py:318-321`）                 | 相同，在 `reset()` 中執行                                                                                                         | LeRobot                                 |
+| 初始狀態           | 每個任務 50 個固定狀態，每次試驗用一個（`run_libero_eval.py:227-230`）               | 每個子環境依序使用相同的固定狀態                                                                                                  | LeRobot                                 |
+| 成功判定           | `env.step` 回傳的 `done`                                                             | `done` 或 `check_success()`                                                                                                       | LeRobot                                 |
+| Action chunking    | 執行完 8 個 action 再重新預測（`run_libero_eval.py:306-344`）                        | Policy 的 action queue                                                                                                            | Policy（§7）                            |
+| **Gripper action** | `[0, 1]` → `[-1, 1]`，二值化後取負（`run_libero_eval.py:265-274`）                   | 原樣傳給環境                                                                                                                      | **`OpenVLALiberoGripperProcessorStep`** |
+| **渲染解析度**     | 256 × 256（`run_libero_eval.py:116`）                                                | 預設 360 × 360                                                                                                                    | **評估參數**                            |
+| **Episode 長度**   | Spatial 220、Object 280、Goal 300、Long 520（`run_libero_eval.py:63-69`）            | Spatial 為 280，其餘相同                                                                                                          | **Spatial 的評估參數**                  |
+| **MuJoCo**         | （原始環境）                                                                         | `mujoco >= 3.4` 會破壞 LIBERO-Spatial 第 5 個任務的初始狀態（[lerobot#4390](https://github.com/huggingface/lerobot/issues/4390)） | **評估環境**                            |
+| 環境 seed          | 固定 `env.seed(0)`（`libero_utils.py:24`）                                           | 每次 reset 以 `--seed` 設定                                                                                                       | 未對齊；影響很小                        |
+
+**Gripper 轉換。** 原始 data loader 把 gripper action 存成 0（閉合）到 1（張開），
+釋出的 checkpoint 也以這個尺度預測（§8.2）。LIBERO 則需要 -1（張開）或 +1（閉
+合）。因此原始評估會把預測值映射到 `[-1, 1]`、取正負號，再取負
+（`experiments/robot/robot_utils.py:149-198`）。LeRobot 只讓 X-VLA 注入 LIBERO 專
+屬的 action 處理（`lerobot/envs/factory.py`），所以本專案改把這個轉換放進轉換後的
+checkpoint：`convert_checkpoint.py` 會把 `OpenVLALiberoGripperProcessorStep` 加到
+它們的 postprocessor 最後。這個 step 屬於這批 LIBERO checkpoint，而不屬於
+policy；若 policy 以已經採用 LIBERO 慣例的資料訓練，就不需要它。
+
+**評估指令。** 評估一個 suite，並對齊原始的評估方式：
+
+```bash
+lerobot-eval \
+    --policy.path=outputs/checkpoints/libero-spatial \
+    --policy.device=cuda \
+    --env.type=libero \
+    --env.task=libero_spatial \
+    --env.observation_height=256 \
+    --env.observation_width=256 \
+    --env.episode_length=220 \
+    --eval.n_episodes=50 \
+    --eval.batch_size=10 \
+    --seed=7
+```
+
+只有 LIBERO-Spatial 需要 `--env.episode_length`；其他 suite 本來就使用原始的上限。
+`--eval.n_episodes=50` 讓一個 suite 的 10 個任務各執行 50 次，與論文一樣每個
+suite 共 500 次試驗。
+
+**評估環境。** LeRobot 的 `libero` extra 只能安裝在 Linux 上（`hf-libero` 標記為
+`sys_platform == 'linux'`），因此評估需要 Linux 機器。由於 lerobot#4390，該環境
+需固定 `mujoco<3.4`。
+
+**目標數字。** 論文中的成功率，每個 suite 為 500 次試驗的平均，依原始
+`LIBERO.md` 的說明另外對三個 seed 取平均：
+
+| Checkpoint                 | Spatial | Object | Goal | Long | 平均 | 來源           |
+| -------------------------- | ------- | ------ | ---- | ---- | ---- | -------------- |
+| 每個 suite 各一個 policy   | 97.6    | 98.4   | 97.9 | 94.5 | 97.1 | 論文 Table I   |
+| 四個 suite 共用一個 policy | 97.7    | 98.0   | 96.1 | 95.3 | 96.8 | 論文 Table XIV |
+
+本專案需要接近到什麼程度，等有結果後再決定。已知的差異來源列在 §7（推論精度）與
+§8.3（影像插值）。
+
+驗證方式：`tests/test_processor.py` 把 `OpenVLALiberoGripperProcessorStep` 與照抄
+原始 `normalize_gripper_action`、`invert_gripper_action` 的計算比對；
+`tests/test_convert_checkpoint.py` 確認 LIBERO 的 postprocessor 會在反正規化之後套用
+它。目前尚未實際執行 `lerobot-eval`。

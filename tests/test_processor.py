@@ -14,6 +14,7 @@ from lerobot.utils.constants import (
 from lerobot_policy_openvla_oft import OpenVLAOFTConfig, make_openvla_oft_pre_post_processors
 from lerobot_policy_openvla_oft.processor_openvla_oft import (
     OpenVLAImageResizeProcessorStep,
+    OpenVLALiberoGripperProcessorStep,
     OpenVLAPromptProcessorStep,
 )
 
@@ -164,3 +165,20 @@ def test_resize_keeps_images_already_at_size():
     resized = OpenVLAImageResizeProcessorStep(size=224).observation({f"{OBS_IMAGES}.image": images})
 
     assert resized[f"{OBS_IMAGES}.image"] is images
+
+
+def original_libero_gripper(action):
+    """`experiments/robot/robot_utils.py:149-198` as used by `run_libero_eval.py:265-274`."""
+    action = action.clone()
+    action[..., -1] = torch.sign(2 * (action[..., -1] - 0.0) / (1.0 - 0.0) - 1)
+    action[..., -1] *= -1.0
+    return action
+
+
+def test_libero_gripper_matches_original():
+    action = torch.tensor([[0.1, -0.2, 0.0, 0.0, 0.0, 0.0, 0.9], [0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2]])
+
+    converted = OpenVLALiberoGripperProcessorStep().action(action)
+
+    torch.testing.assert_close(converted, original_libero_gripper(action))
+    assert converted[:, -1].tolist() == [-1.0, 1.0]

@@ -9,6 +9,7 @@ from lerobot_policy_openvla_oft.convert_checkpoint import (
     convert_dataset_statistics,
     convert_vla_key,
     libero_config,
+    libero_processors,
     load_released_weights,
 )
 from lerobot_policy_openvla_oft.model import OpenVLAOFT
@@ -127,3 +128,15 @@ def test_dataset_statistics_become_lerobot_stats(tmp_path):
     assert config.robot_state_feature.shape == (1,)
     assert config.action_feature.shape == (2,)
     assert list(config.image_features) == ["observation.images.image", "observation.images.image2"]
+
+
+def test_libero_postprocessor_converts_gripper_last():
+    stats = {
+        key: {"q01": torch.zeros(dim), "q99": torch.ones(dim)} for key, dim in ((ACTION, 7), (OBS_STATE, 8))
+    }
+    config = libero_config(stats, [True] * 6 + [False])
+
+    _, postprocessor = libero_processors(config, stats)
+
+    action = postprocessor(torch.tensor([[0.0] * 6 + [0.9]]))
+    assert action[0, -1].item() == -1.0

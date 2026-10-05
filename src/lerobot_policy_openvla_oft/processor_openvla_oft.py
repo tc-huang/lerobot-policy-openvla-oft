@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 from lerobot.configs import FeatureType, NormalizationMode, PipelineFeatureType, PolicyFeature
 from lerobot.processor import (
+    ActionProcessorStep,
     ComplementaryDataProcessorStep,
     NormalizerProcessorStep,
     ObservationProcessorStep,
@@ -135,6 +136,26 @@ class OpenVLANormalizerProcessorStep(_BoundsQ99Mixin, NormalizerProcessorStep):
 @dataclass
 class OpenVLAUnnormalizerProcessorStep(_BoundsQ99Mixin, UnnormalizerProcessorStep):
     """Unnormalizes actions with the original `BOUNDS_Q99` scheme."""
+
+
+@ProcessorStepRegistry.register(name="openvla_oft_libero_gripper")
+@dataclass
+class OpenVLALiberoGripperProcessorStep(ActionProcessorStep):
+    """Converts the gripper action of the released LIBERO checkpoints to the LIBERO convention.
+
+    The checkpoints predict the gripper on the original data loader's scale, 0 (close)
+    to 1 (open). LIBERO expects -1 (open) or +1 (close), so the value is mapped to
+    [-1, 1], binarized by its sign, and negated.
+    """
+
+    def action(self, action: PolicyAction) -> PolicyAction:
+        gripper = -torch.sign(2 * action[..., -1:] - 1)
+        return torch.cat([action[..., :-1], gripper], dim=-1)
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
 
 
 def make_openvla_oft_pre_post_processors(
