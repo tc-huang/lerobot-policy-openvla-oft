@@ -2,6 +2,7 @@ import pytest
 import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.processor import PolicyProcessorPipeline
+from lerobot.processor.converters import policy_action_to_transition, transition_to_policy_action
 from lerobot.utils.constants import (
     ACTION,
     OBS_IMAGES,
@@ -29,13 +30,28 @@ def make_config():
             OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(2,)),
         },
         output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(2,))},
+        action_norm_mask=[True, False],
         device="cpu",
     )
 
 
+Q01, Q99 = torch.tensor([-0.5, 0.0]), torch.tensor([1.5, 1.0])
+MASK = torch.tensor([True, False])
+
+
 def make_stats():
-    stats = {"q01": torch.tensor([-1.0, 0.0]), "q99": torch.tensor([1.0, 2.0])}
+    stats = {"q01": Q01, "q99": Q99}
     return {OBS_STATE: stats, ACTION: stats}
+
+
+def original_normalize(x, mask):
+    """`prismatic/vla/datasets/rlds/utils/data_utils.py:72-83` (BOUNDS_Q99)."""
+    return torch.where(mask, torch.clamp(2 * (x - Q01) / (Q99 - Q01 + 1e-8) - 1, -1, 1), x)
+
+
+def original_unnormalize(a, mask):
+    """`prismatic/extern/hf/modeling_prismatic.py:785-789`."""
+    return torch.where(mask, 0.5 * (a + 1) * (Q99 - Q01 + 1e-8) + Q01, a)
 
 
 @pytest.fixture(scope="module")
@@ -91,3 +107,39 @@ def test_pipeline_round_trip(tmp_path, processors):
     batch = loaded({f"{OBS_IMAGES}.image": torch.rand(3, 224, 224), OBS_STATE: torch.zeros(2), "task": TASK})
 
     assert batch[OBS_LANGUAGE_TOKENS].tolist() == [EXPECTED_IDS]
+
+
+def make_observation(state, **extra):
+    return {f"{OBS_IMAGES}.image": torch.rand(3, 224, 224), OBS_STATE: state, "task": TASK, **extra}
+
+
+def test_normalization_matches_original_bounds_q99(processors):
+    preprocessor, _ = processors
+    raw = torch.tensor([[-2.0, 0.3], [0.1, 0.7], [3.0, 5.0]])
+
+    batch = preprocessor(make_observation(raw[0], action=raw))
+
+    torch.testing.assert_close(batch[ACTION], original_normalize(raw, MASK))
+    torch.testing.assert_close(batch[OBS_STATE][0], original_normalize(raw[0], torch.tensor([True, True])))
+
+
+def test_unnormalization_matches_original(processors):
+    _, postprocessor = processors
+    normalized = torch.tensor([[-1.0, 0.2], [0.5, 1.0], [1.3, -0.4]])
+
+    torch.testing.assert_close(postprocessor(normalized), original_unnormalize(normalized, MASK))
+
+
+def test_action_norm_mask_survives_round_trip(tmp_path, processors):
+    _, postprocessor = processors
+    postprocessor.save_pretrained(tmp_path)
+
+    loaded = PolicyProcessorPipeline.from_pretrained(
+        tmp_path,
+        config_filename=f"{postprocessor.name}.json",
+        to_transition=policy_action_to_transition,
+        to_output=transition_to_policy_action,
+    )
+
+    normalized = torch.tensor([[0.5, 0.25]])
+    torch.testing.assert_close(loaded(normalized), original_unnormalize(normalized, MASK))

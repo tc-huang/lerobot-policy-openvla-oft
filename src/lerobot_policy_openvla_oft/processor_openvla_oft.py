@@ -2,16 +2,20 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-from lerobot.configs import PipelineFeatureType, PolicyFeature
+from lerobot.configs import FeatureType, NormalizationMode, PipelineFeatureType, PolicyFeature
 from lerobot.processor import (
     ComplementaryDataProcessorStep,
+    NormalizerProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
     ProcessorStepRegistry,
     TokenizerProcessorStep,
+    UnnormalizerProcessorStep,
     make_default_policy_processor_steps,
     make_policy_processor_pipelines,
 )
+from lerobot.processor.normalize_processor import _NormalizationMixin
+from torch import Tensor
 from transformers import LlamaTokenizerFast
 
 from .configuration_openvla_oft import OpenVLAOFTConfig
@@ -55,6 +59,46 @@ class OpenVLATokenizerProcessorStep(TokenizerProcessorStep):
         self.input_tokenizer = LlamaTokenizerFast.from_pretrained(self.tokenizer_name)
 
 
+@dataclass
+class _BoundsQ99Mixin(_NormalizationMixin):
+    """Turns LeRobot's `QUANTILES` mode into the original `BOUNDS_Q99` scheme.
+
+    On top of mapping [q01, q99] to [-1, 1], normalized values are clipped to
+    [-1, 1], and action dimensions whose `action_norm_mask` entry is False are
+    passed through unchanged in both directions.
+    """
+
+    action_norm_mask: list[bool] | None = None
+
+    def _apply_transform(
+        self, tensor: Tensor, key: str, feature_type: FeatureType, *, inverse: bool = False
+    ) -> Tensor:
+        result = super()._apply_transform(tensor, key, feature_type, inverse=inverse)
+        if self.norm_map.get(feature_type) != NormalizationMode.QUANTILES:
+            return result
+        if not inverse:
+            result = result.clamp(-1.0, 1.0)
+        if feature_type == FeatureType.ACTION and self.action_norm_mask is not None:
+            mask = torch.tensor(self.action_norm_mask, device=tensor.device)
+            result = torch.where(mask, result, tensor)
+        return result
+
+    def get_config(self) -> dict[str, Any]:
+        return {**super().get_config(), "action_norm_mask": self.action_norm_mask}
+
+
+@ProcessorStepRegistry.register(name="openvla_oft_normalizer")
+@dataclass
+class OpenVLANormalizerProcessorStep(_BoundsQ99Mixin, NormalizerProcessorStep):
+    """Normalizes state and action with the original `BOUNDS_Q99` scheme."""
+
+
+@ProcessorStepRegistry.register(name="openvla_oft_unnormalizer")
+@dataclass
+class OpenVLAUnnormalizerProcessorStep(_BoundsQ99Mixin, UnnormalizerProcessorStep):
+    """Unnormalizes actions with the original `BOUNDS_Q99` scheme."""
+
+
 def make_openvla_oft_pre_post_processors(
     config: OpenVLAOFTConfig,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
@@ -77,7 +121,20 @@ def make_openvla_oft_pre_post_processors(
             tokenizer_name=config.tokenizer_name, padding="longest", padding_side="right"
         ),
         steps.to_device,
-        steps.normalize,
+        OpenVLANormalizerProcessorStep(
+            features={**config.input_features, **config.output_features},
+            norm_map=config.normalization_mapping,
+            stats=dataset_stats,
+            action_norm_mask=config.action_norm_mask,
+        ),
     ]
-    output_steps = [steps.unnormalize, steps.to_cpu]
+    output_steps = [
+        OpenVLAUnnormalizerProcessorStep(
+            features=config.output_features,
+            norm_map=config.normalization_mapping,
+            stats=dataset_stats,
+            action_norm_mask=config.action_norm_mask,
+        ),
+        steps.to_cpu,
+    ]
     return make_policy_processor_pipelines(input_steps=input_steps, output_steps=output_steps)

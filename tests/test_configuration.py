@@ -72,3 +72,14 @@ def test_scheduler_preset_decays_learning_rate_once():
 def test_rejects_unsupported_dtype():
     with pytest.raises(ValueError, match="dtype"):
         OpenVLAOFTConfig(dtype="float16")
+
+
+def test_rejects_action_norm_mask_of_wrong_length():
+    config = OpenVLAOFTConfig(
+        input_features={f"{OBS_IMAGES}.image": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 224, 224))},
+        output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(7,))},
+        action_norm_mask=[True] * 6,
+    )
+
+    with pytest.raises(ValueError, match="action_norm_mask"):
+        config.validate_features()

@@ -36,6 +36,7 @@ follower 手臂上。
 | 每個 chunk 執行的 action 數    | 8（整個 chunk，open-loop）          | `n_action_steps`                                  | 論文 §V-A、Table IV；原 repo `experiments/robot/libero/run_libero_eval.py:100`                         |
 | 觀測歷史                       | 無（只用當下這一步）                | `n_obs_steps`、`observation_delta_indices`        | 論文 Table IV                                                                                          |
 | State 與 action 正規化         | `[q01, q99]` → `[-1, 1]`            | `normalization_mapping`（`QUANTILES`）            | 原 repo `prismatic/vla/constants.py:30`；論文只提到 action 正規化到 `[-1, 1]`（App. D）                |
+| 不正規化的 action 維度         | 無（每個維度都正規化）              | `action_norm_mask`                                | 原 repo `prismatic/vla/datasets/rlds/oxe/materialize.py:35-45`；見 §8.2                                |
 | 影像正規化                     | 無                                  | `normalization_mapping`（`IDENTITY`）             | 本專案：每個 vision backbone 會自行正規化                                                              |
 | Optimizer                      | AdamW                               | `get_optimizer_preset()`                          | 原 repo `vla-scripts/finetune.py:935`；論文未提及                                                      |
 | Learning rate                  | 5e-4                                | `optimizer_lr`                                    | 論文 Table IV；原 repo `vla-scripts/finetune.py:89`                                                    |
@@ -54,7 +55,7 @@ follower 手臂上。
 LeRobot 的 `QUANTILES` 與原始實作的 `BOUNDS_Q99` 有兩處不同：原始實作會把正規化
 後的值截斷到 `[-1, 1]`（`prismatic/vla/datasets/rlds/utils/data_utils.py:81`），
 並且不正規化被 mask 的維度。例如 LIBERO checkpoint 的 `dataset_statistics.json`
-把 gripper 的 action 維度設為 mask。這兩處差異都由 processor 處理。
+把 gripper 的 action 維度設為 mask。這兩處差異都由 processor 處理（§8.2）。
 
 論文 Table IV 中其餘的超參數，由其他元件或訓練指令負責：
 
@@ -346,3 +347,51 @@ tokenizer 呼叫就能同時重現這兩種情況。
 - **與網路之間的約定。** 網路（§5）要求每個 prompt 以 BOS 開頭、右側 padding，並
   附上 attention mask。Test `tests/test_policy.py::test_accepts_preprocessor_output`
   會讓真正的 preprocessor 輸出直接進入 policy，確保兩邊的約定一致。
+
+#### 8.2 State 與 action 正規化
+
+OpenVLA-OFT 以原始實作稱為 `BOUNDS_Q99` 的方式正規化機器人狀態與 action。對每個
+維度，以 dataset 統計值中的第 1 與第 99 百分位數 `q01`、`q99` 計算：
+
+```text
+正規化：    x̂ = clip(2 · (x − q01) / (q99 − q01) − 1, −1, 1)
+反正規化：  x = (x̂ + 1) / 2 · (q99 − q01) + q01
+```
+
+Action 的維度也可以被 mask：被 mask 的維度在正規化與反正規化時都原樣通過。原始實
+作會把 end-effector dataset 的 gripper 設為 mask，因為 gripper action 本身已經是
+絕對的開合指令，而不是位移量。在釋出的 LIBERO checkpoint 中，gripper action 的值
+域是 `0`（閉合）到 `1`（張開），這是原始 data loader 的慣例
+（`experiments/robot/robot_utils.py:180-185`），網路也是以這個原始尺度學習輸出。
+
+LeRobot 內建的 `QUANTILES` 只實作了公式的第一部分。
+`OpenVLANormalizerProcessorStep` 與 `OpenVLAUnnormalizerProcessorStep` 繼承
+LeRobot 的 normalizer 與 unnormalizer，沿用它們管理統計值與存檔的方式，再加上截斷
+與 mask。
+
+| 設定                      | 值                                                                           | Config 欄位                            | 來源                                                                                                                                                         |
+| ------------------------- | ---------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 值域映射                  | State 與 action 皆為 `[q01, q99]` → `[-1, 1]`                                | `normalization_mapping`（`QUANTILES`） | 原 repo `prismatic/vla/constants.py:30`、`prismatic/vla/datasets/rlds/utils/data_utils.py:72-83`                                                             |
+| 截斷                      | 正規化後的值截斷到 `[-1, 1]`：訓練時的 action 目標，以及訓練與推論時的 state | （固定）                               | 原 repo：訓練 `prismatic/vla/datasets/rlds/utils/data_utils.py:81`，推論時的 state `experiments/robot/openvla_utils.py:669-676`                              |
+| 反正規化                  | 反向映射，不截斷                                                             | （固定）                               | 原 repo `prismatic/extern/hf/modeling_prismatic.py:785-789`                                                                                                  |
+| 被 mask 的 action 維度    | 原樣通過；state 一律不 mask                                                  | `action_norm_mask`                     | 原 repo：end-effector action 的 mask `prismatic/vla/datasets/rlds/oxe/materialize.py:35-39`，套用於 `data_utils.py:79-83` 與 `modeling_prismatic.py:785-789` |
+| 預設 mask                 | 無：每個 action 維度都正規化                                                 | `action_norm_mask`                     | 本專案；與原始實作對關節位置 action 的處理一致（`materialize.py:43-45`），適用於 SO-100/SO-101 手臂                                                          |
+| LIBERO checkpoint 的 mask | `[True] * 6 + [False]`（gripper 不正規化）                                   | `action_norm_mask`                     | 原 repo：`materialize.py:37-39`；記錄在每個 checkpoint 的 `dataset_statistics.json` 的 `mask` 中                                                             |
+
+為什麼 mask 對 LIBERO checkpoint 很重要：它們的 gripper 統計值是 `q01 = 0`、
+`q99 = 1`。若對 gripper 做正規化，會把它映射到 `[-1, 1]`，但網路學到的是在原始的
+`[0, 1]` 尺度上輸出，因此反正規化後每個 gripper 指令都會被錯誤解讀。所以轉換
+checkpoint 時，會依 `dataset_statistics.json` 設定 `action_norm_mask`。
+
+與原始實作的差異（本專案）：
+
+- **Epsilon。** 原始實作一律在 `q99 − q01` 上加 `1e-8`；LeRobot 只在兩者相等時才
+  以 `1e-8` 代替。相對差異約為 `1e-8`，實際上沒有影響。
+- **每個 policy 一個 mask。** 原始實作把 mask 存在 dataset 統計值中；本專案則把它
+  定義為 configuration 欄位，因此會隨 policy 與 processor 一起存檔，不依賴統計值的
+  格式。
+
+驗證方式：`tests/test_processor.py` 把 preprocessor 與 postprocessor 的結果，與直
+接照抄原始公式（`data_utils.py:72-83`、`modeling_prismatic.py:785-789`）的計算結果
+比對，涵蓋超出 `[q01, q99]` 的值與被 mask 的維度，並確認 mask 在 pipeline 存檔後
+重新載入仍然保留。

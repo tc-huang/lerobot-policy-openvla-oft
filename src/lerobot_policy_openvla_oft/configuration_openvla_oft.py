@@ -33,7 +33,9 @@ class OpenVLAOFTConfig(PreTrainedConfig):
         n_action_steps: Number of actions from each chunk executed open-loop before
             querying the policy again.
         normalization_mapping: Normalization mode per feature type. State and action
-            are mapped from their [q01, q99] range to [-1, 1].
+            are mapped from their [q01, q99] range to [-1, 1] and clipped.
+        action_norm_mask: Per action dimension, whether it is normalized. Masked
+            dimensions are passed through unchanged. None normalizes every dimension.
         image_size: Square input resolution of the vision backbone.
         tokenizer_name: Hugging Face repository of the Llama-2 tokenizer used for prompts.
         dtype: Weight dtype of the network; any dtype other than float32 also runs
@@ -58,6 +60,8 @@ class OpenVLAOFTConfig(PreTrainedConfig):
             "ACTION": NormalizationMode.QUANTILES,
         }
     )
+
+    action_norm_mask: list[bool] | None = None
 
     image_size: int = 224
     tokenizer_name: str = "openvla/openvla-7b"
@@ -88,6 +92,11 @@ class OpenVLAOFTConfig(PreTrainedConfig):
             raise ValueError("OpenVLA-OFT requires at least one image feature.")
         if self.action_feature is None:
             raise ValueError("OpenVLA-OFT requires an action output feature.")
+        action_dim = self.action_feature.shape[0]
+        if self.action_norm_mask is not None and len(self.action_norm_mask) != action_dim:
+            raise ValueError(
+                f"`action_norm_mask` has {len(self.action_norm_mask)} entries for {action_dim} action dims."
+            )
 
     def get_optimizer_preset(self) -> AdamWConfig:
         return AdamWConfig(
