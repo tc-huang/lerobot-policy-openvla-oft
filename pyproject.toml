@@ -1,0 +1,16 @@
+[project]
+name = "lerobot_policy_openvla_oft"
+version = "0.1.0"
+description = "OpenVLA-OFT policy plugin for LeRobot"
+readme = "README.md"
+authors = [
+    { name = "HUANG TZU-CHUN", email = "tzu.chun.huang.tw@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "lerobot>=0.6.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
