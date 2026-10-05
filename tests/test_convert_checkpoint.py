@@ -40,7 +40,9 @@ def released_key(key):
 def released_checkpoint(model):
     vla, action_head, proprio = {}, {}, {}
     for key, value in model.state_dict().items():
-        target = action_head if key.startswith("action_head.") else proprio if key.startswith("proprio") else vla
+        target = (
+            action_head if key.startswith("action_head.") else proprio if key.startswith("proprio") else vla
+        )
         target[released_key(key)] = value.clone()
     pruned_block = len(model.vision.dinov2.vit.blocks)
     vla |= {
@@ -75,7 +77,10 @@ def test_vla_keys():
 
 def test_action_head_keys():
     assert convert_action_head_key("module.model.fc1.weight") == "action_head.input_proj.weight"
-    assert convert_action_head_key("module.model.mlp_resnet_blocks.1.ffn.0.bias") == "action_head.blocks.1.norm.bias"
+    assert (
+        convert_action_head_key("module.model.mlp_resnet_blocks.1.ffn.0.bias")
+        == "action_head.blocks.1.norm.bias"
+    )
     assert convert_action_head_key("module.model.mlp_resnet_blocks.1.ffn.1.weight") == (
         "action_head.blocks.1.linear.weight"
     )
@@ -109,7 +114,9 @@ def test_rejects_missing_weights(make_model):
 def test_dataset_statistics_become_lerobot_stats(tmp_path):
     path = tmp_path / "dataset_statistics.json"
     action = {"q01": [0.0, 0.0], "q99": [1.0, 1.0], "mask": [True, False]}
-    path.write_text(json.dumps({"libero_spatial_no_noops": {"action": action, "proprio": {"q01": [0.0], "q99": [2.0]}}}))
+    path.write_text(
+        json.dumps({"libero_spatial_no_noops": {"action": action, "proprio": {"q01": [0.0], "q99": [2.0]}}})
+    )
 
     stats, mask = convert_dataset_statistics(path)
     config = libero_config(stats, mask)

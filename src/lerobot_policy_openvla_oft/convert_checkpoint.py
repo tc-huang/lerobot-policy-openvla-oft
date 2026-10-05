@@ -79,7 +79,9 @@ def pruned_prefixes(model: OpenVLAOFT) -> tuple[str, ...]:
     prefixes = []
     for name in ("dinov2", "siglip"):
         vit = getattr(model.vision, name).vit
-        prefixes += [f"vision.{name}.vit.{part}." for part in (f"blocks.{len(vit.blocks)}", "norm", "attn_pool")]
+        prefixes += [
+            f"vision.{name}.vit.{part}." for part in (f"blocks.{len(vit.blocks)}", "norm", "attn_pool")
+        ]
     return tuple(prefixes)
 
 
@@ -94,9 +96,7 @@ def load_released_weights(
     Weights that this port intentionally removed (the language-model head and the
     unused vision layers) are dropped; any other mismatch raises an error.
     """
-    converted = {
-        new: value for key, value in vla.items() if (new := convert_vla_key(key)) is not None
-    }
+    converted = {new: value for key, value in vla.items() if (new := convert_vla_key(key)) is not None}
     converted |= {convert_action_head_key(k): v for k, v in action_head.items()}
     converted |= {convert_proprio_projector_key(k): v for k, v in proprio_projector.items()}
 
@@ -125,7 +125,9 @@ def libero_config(stats: dict[str, dict[str, Tensor]], action_norm_mask: list[bo
             **dict.fromkeys(LIBERO_IMAGE_KEYS, image),
             OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=tuple(stats[OBS_STATE]["q01"].shape)),
         },
-        output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=tuple(stats[ACTION]["q01"].shape))},
+        output_features={
+            ACTION: PolicyFeature(type=FeatureType.ACTION, shape=tuple(stats[ACTION]["q01"].shape))
+        },
         action_norm_mask=action_norm_mask,
     )
 
@@ -155,7 +157,9 @@ def convert(repo_id: str, output_dir: Path, revision: str | None = None) -> None
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--repo-id", required=True, help="Released checkpoint on the Hugging Face Hub.")
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--revision", help="Optional commit, branch, or tag of the checkpoint repository.")
