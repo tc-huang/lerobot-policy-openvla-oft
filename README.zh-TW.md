@@ -59,7 +59,7 @@ LeRobot 的 `QUANTILES` 與原始實作的 `BOUNDS_Q99` 有兩處不同：原始
 | 總 batch size         | 64（每張 GPU 8 × 8 張 GPU）   | `lerobot-train --batch_size`、多 GPU 訓練 |
 | 訓練步數              | 150K（LIBERO-Goal 為 50K）    | `lerobot-train --steps`                   |
 | 輸入影像              | 1 張第三人稱 + 1 張手腕相機   | Dataset features；§2 Vision backbone      |
-| 機器人狀態輸入        | 是                            | Dataset features；proprio projector       |
+| 機器人狀態輸入        | 是                            | Dataset features；§3 Projectors           |
 | 輸入影像尺寸          | 224 × 224                     | §2 Vision backbone（`image_size`）        |
 | LoRA rank             | 32                            | LoRA fine-tuning                          |
 | 影像增強              | 90% random crop、color jitter | Processor 與訓練                          |
@@ -104,3 +104,29 @@ DINOv2 的統計值是 ImageNet 的 mean 與 std 經 bfloat16 捨入後的結果
   數（`modeling_prismatic.py:141-157`）。本專案不透過 `transformers` 載入權重，因
   此保留 timm 的名稱，改在轉換時重新命名 checkpoint 的 key。
 - **批次編碼。** 所有相機影像在一次批次呼叫中編碼，而不是用 Python 迴圈逐張處理。
+
+### 3. Projectors
+
+`projectors.py` 包含兩個 MLP，負責把非文字的輸入映射到 Llama-2 的 token embedding
+空間（`llm_dim = 4096`）。
+
+| 設定                        | 值                                                     | Config 欄位                  | 來源                                                                               |
+| --------------------------- | ------------------------------------------------------ | ---------------------------- | ---------------------------------------------------------------------------------- |
+| Vision projector            | 3 層 GELU MLP：`2176 → 8704 → 4096 → 4096`（71M 參數） | （固定）                     | 論文 App. A、App. B.3；原 repo `prismatic/extern/hf/modeling_prismatic.py:243-246` |
+| Vision projector 隱藏層寬度 | vision feature 維度的 4 倍                             | （固定）                     | 原 repo `prismatic/extern/hf/modeling_prismatic.py:243`；論文未提及                |
+| Proprio projector           | 2 層 GELU MLP：`state 維度 → 4096 → 4096`              | （固定）                     | 論文 App. A（OFT 修改 2）、App. B.3；原 repo `prismatic/models/projectors.py:6-23` |
+| Proprio projector 大小      | LIBERO 8 維 state 時為 17M 參數                        | （推導而得）                 | 論文 Table IV                                                                      |
+| Proprio token 數            | 每一步 1 個 token                                      | （固定）                     | 原 repo `prismatic/extern/hf/modeling_prismatic.py:449-459`；論文未提及            |
+| State 維度                  | 取自 dataset 的 `observation.state` feature            | （由 dataset features 決定） | 原 repo 針對 LIBERO 寫死 `PROPRIO_DIM = 8`（`prismatic/vla/constants.py:29`）      |
+
+Vision projector 屬於預訓練的 OpenVLA 模型；proprio projector 則是 OpenVLA-OFT
+新增的模組，以 PyTorch 的預設方式初始化（`vla-scripts/finetune.py:878-884`）。兩者
+各自如何訓練，留待 LoRA fine-tuning 一節說明。
+
+與原始實作的差異（本專案）：
+
+- **Vision projector 只保留一種用途。** 原始的 `PrismaticProjector` 也支援給單一
+  （非融合）vision backbone 用的 2 層版本。OpenVLA 一律使用融合 backbone，因此只
+  保留 3 層版本。
+- **Proprio token 的 shape。** `ProprioProjector` 直接回傳 `(B, 1, llm_dim)`，也就
+  是可以直接插入序列的 token，而不是把 reshape 留給呼叫端處理。

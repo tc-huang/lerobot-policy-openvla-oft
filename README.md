@@ -66,7 +66,7 @@ or by the training command:
 | Total batch size         | 64 (8 per GPU × 8 GPUs)         | `lerobot-train --batch_size`, multi-GPU training |
 | Training steps           | 150K (50K for LIBERO-Goal)      | `lerobot-train --steps`                          |
 | Input images             | 1 third-person + 1 wrist camera | Dataset features; §2 Vision backbone             |
-| Robot state input        | Yes                             | Dataset features; proprio projector              |
+| Robot state input        | Yes                             | Dataset features; §3 Projectors                  |
 | Input image size         | 224 × 224                       | §2 Vision backbone (`image_size`)                |
 | LoRA rank                | 32                              | LoRA fine-tuning                                 |
 | Image augmentations      | 90% random crop, color jitter   | Processor and training                           |
@@ -119,3 +119,30 @@ Differences from the original implementation (this port):
   and renames the checkpoint keys during conversion.
 - **Batched encoding.** All camera images are encoded in one batched call
   instead of a Python loop over images.
+
+### 3. Projectors
+
+`projectors.py` holds the two MLPs that map non-text inputs into the Llama-2
+token embedding space (`llm_dim = 4096`).
+
+| Setting                       | Value                                                               | Config field            | Source                                                                            |
+| ----------------------------- | ------------------------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------- |
+| Vision projector              | 3-layer MLP with GELU: `2176 → 8704 → 4096 → 4096` (71M parameters) | (fixed)                 | Paper App. A, App. B.3; Repo `prismatic/extern/hf/modeling_prismatic.py:243-246`  |
+| Vision projector hidden width | 4 × vision feature dim                                              | (fixed)                 | Repo `prismatic/extern/hf/modeling_prismatic.py:243`; not stated in the paper     |
+| Proprio projector             | 2-layer MLP with GELU: `state_dim → 4096 → 4096`                    | (fixed)                 | Paper App. A (OFT change 2), App. B.3; Repo `prismatic/models/projectors.py:6-23` |
+| Proprio projector size        | 17M parameters for the 8-dim LIBERO state                           | (derived)               | Paper Table IV                                                                    |
+| Proprio tokens                | 1 token per step                                                    | (fixed)                 | Repo `prismatic/extern/hf/modeling_prismatic.py:449-459`; not stated in the paper |
+| State dimension               | From the dataset's `observation.state` feature                      | (from dataset features) | Repo hardcodes `PROPRIO_DIM = 8` for LIBERO (`prismatic/vla/constants.py:29`)     |
+
+The vision projector belongs to the pretrained OpenVLA model, while the proprio
+projector is new in OpenVLA-OFT and starts from PyTorch's default
+initialization (`vla-scripts/finetune.py:878-884`). How each one is trained is
+covered in the LoRA fine-tuning section.
+
+Differences from the original implementation (this port):
+
+- **Single-purpose vision projector.** The original `PrismaticProjector` also
+  supports a 2-layer variant for single (non-fused) vision backbones. OpenVLA
+  always uses the fused backbone, so only the 3-layer variant is kept.
+- **Proprio token shape.** `ProprioProjector` returns `(B, 1, llm_dim)`, a
+  ready-to-insert token, instead of leaving the reshape to the caller.
