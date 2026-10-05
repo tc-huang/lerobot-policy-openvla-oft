@@ -656,4 +656,47 @@ How this is verified: `tests/test_processor.py` compares
 `OpenVLALiberoGripperProcessorStep` with a transcription of the original
 `normalize_gripper_action` and `invert_gripper_action`, and
 `tests/test_convert_checkpoint.py` checks that the LIBERO postprocessor applies
-it after unnormalization. Running `lerobot-eval` itself has not been done yet.
+it after unnormalization.
+
+#### Results
+
+**LIBERO-Spatial, `moojink/openvla-7b-oft-finetuned-libero-spatial`: 98.0%
+(490/500)**, against 97.6% in Paper Table I. This is a single seed (`--seed=7`);
+the paper averages three.
+
+| Task | Instruction                                                                              | Success             |
+| ---- | ---------------------------------------------------------------------------------------- | ------------------- |
+| 0    | pick up the black bowl between the plate and the ramekin and place it on the plate       | 50/50               |
+| 1    | pick up the black bowl next to the ramekin and place it on the plate                     | 49/50               |
+| 2    | pick up the black bowl from table center and place it on the plate                       | 50/50               |
+| 3    | pick up the black bowl on the cookie box and place it on the plate                       | 50/50               |
+| 4    | pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate | 47/50               |
+| 5    | pick up the black bowl on the ramekin and place it on the plate                          | 45/50               |
+| 6    | pick up the black bowl next to the cookie box and place it on the plate                  | 50/50               |
+| 7    | pick up the black bowl on the stove and place it on the plate                            | 49/50               |
+| 8    | pick up the black bowl next to the plate and place it on the plate                       | 50/50               |
+| 9    | pick up the black bowl on the wooden cabinet and place it on the plate                   | 50/50               |
+|      | **Total**                                                                                | **490/500 (98.0%)** |
+
+Run details (2026-10-05):
+
+| Item       | Value                                                                                                                                                                           |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Command    | `sky launch -c openvla-oft-eval skypilot/libero_eval.yaml -i 15 --down` for a 2-episode smoke test, then `sky exec openvla-oft-eval skypilot/libero_eval.yaml` for the full run |
+| Code       | `db72470`                                                                                                                                                                       |
+| Machine    | RunPod L40S (48 GB), 12 vCPUs, 62 GB RAM, region EU-NL-1, $1.09/hour list price; no L40 was available in any region                                                             |
+| Software   | Python 3.12, PyTorch 2.11.0+cu130, transformers 5.5.4, LeRobot 0.6.1, MuJoCo 3.3.7, robosuite 1.4.0, `MUJOCO_GL=egl`                                                            |
+| Evaluation | 500 episodes, 10 environments in parallel (`--eval.batch_size=10`), 256 × 256 rendering, 220-step limit                                                                         |
+
+| Stage                                                          | Time                                                                                                                    |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Provisioning the L40S                                          | About 2 minutes                                                                                                         |
+| Setup on a fresh machine (`apt-get`, `uv sync --extra libero`) | About 1 minute                                                                                                          |
+| Checkpoint download from the Hugging Face Hub (15.5 GB)        | 74 seconds                                                                                                              |
+| Checkpoint conversion                                          | About 2 minutes                                                                                                         |
+| Smoke test (task 0, 2 episodes)                                | 53 seconds of evaluation, 3 minutes for the whole job                                                                   |
+| Full LIBERO-Spatial evaluation                                 | 26.1 minutes of evaluation (3.1 seconds per episode with 10 parallel environments), 28.3 minutes for the whole job      |
+| Total machine time                                             | About 62 minutes, including two setup fixes and the 15-minute idle period before autostop; about $1.1 at the list price |
+
+The two lowest tasks are 4 (94%) and 5 (90%). Task 5 is the one affected by
+lerobot#4390; this run used MuJoCo 3.3.7, below the affected 3.4 range.

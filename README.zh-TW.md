@@ -592,4 +592,47 @@ suite 共 500 次試驗。
 驗證方式：`tests/test_processor.py` 把 `OpenVLALiberoGripperProcessorStep` 與照抄
 原始 `normalize_gripper_action`、`invert_gripper_action` 的計算比對；
 `tests/test_convert_checkpoint.py` 確認 LIBERO 的 postprocessor 會在反正規化之後套用
-它。目前尚未實際執行 `lerobot-eval`。
+它。
+
+#### 結果
+
+**LIBERO-Spatial，`moojink/openvla-7b-oft-finetuned-libero-spatial`：98.0%
+（490/500）**，論文 Table I 為 97.6%。本次只跑一個 seed（`--seed=7`），論文則是
+三個 seed 的平均。
+
+| 任務 | 指令                                                                                     | 成功                 |
+| ---- | ---------------------------------------------------------------------------------------- | -------------------- |
+| 0    | pick up the black bowl between the plate and the ramekin and place it on the plate       | 50/50                |
+| 1    | pick up the black bowl next to the ramekin and place it on the plate                     | 49/50                |
+| 2    | pick up the black bowl from table center and place it on the plate                       | 50/50                |
+| 3    | pick up the black bowl on the cookie box and place it on the plate                       | 50/50                |
+| 4    | pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate | 47/50                |
+| 5    | pick up the black bowl on the ramekin and place it on the plate                          | 45/50                |
+| 6    | pick up the black bowl next to the cookie box and place it on the plate                  | 50/50                |
+| 7    | pick up the black bowl on the stove and place it on the plate                            | 49/50                |
+| 8    | pick up the black bowl next to the plate and place it on the plate                       | 50/50                |
+| 9    | pick up the black bowl on the wooden cabinet and place it on the plate                   | 50/50                |
+|      | **合計**                                                                                 | **490/500（98.0%）** |
+
+執行細節（2026-10-05）：
+
+| 項目     | 值                                                                                                                                                                                |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 指令     | 先以 `sky launch -c openvla-oft-eval skypilot/libero_eval.yaml -i 15 --down` 跑 2 個 episode 的 smoke test，再以 `sky exec openvla-oft-eval skypilot/libero_eval.yaml` 跑完整評估 |
+| 程式碼   | `db72470`                                                                                                                                                                         |
+| 機器     | RunPod L40S（48 GB）、12 vCPU、62 GB RAM、EU-NL-1 機房，目錄價每小時 $1.09；當時所有機房都沒有 L40                                                                                |
+| 軟體     | Python 3.12、PyTorch 2.11.0+cu130、transformers 5.5.4、LeRobot 0.6.1、MuJoCo 3.3.7、robosuite 1.4.0、`MUJOCO_GL=egl`                                                              |
+| 評估設定 | 500 個 episode、同時 10 個環境（`--eval.batch_size=10`）、256 × 256 渲染、220 步上限                                                                                              |
+
+| 階段                                                    | 時間                                                                           |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| 開啟 L40S                                               | 約 2 分鐘                                                                      |
+| 新機器上的 setup（`apt-get`、`uv sync --extra libero`） | 約 1 分鐘                                                                      |
+| 從 Hugging Face Hub 下載 checkpoint（15.5 GB）          | 74 秒                                                                          |
+| 轉換 checkpoint                                         | 約 2 分鐘                                                                      |
+| Smoke test（任務 0，2 個 episode）                      | 評估 53 秒，整個 job 3 分鐘                                                    |
+| 完整 LIBERO-Spatial 評估                                | 評估 26.1 分鐘（同時 10 個環境下每個 episode 3.1 秒），整個 job 28.3 分鐘      |
+| 機器總使用時間                                          | 約 62 分鐘，包含兩次修正 setup 以及自動關機前 15 分鐘的閒置；以目錄價計約 $1.1 |
+
+成功率最低的兩個任務是 4（94%）與 5（90%）。任務 5 正是 lerobot#4390 影響的任務；
+本次使用 MuJoCo 3.3.7，低於受影響的 3.4 以上版本。
