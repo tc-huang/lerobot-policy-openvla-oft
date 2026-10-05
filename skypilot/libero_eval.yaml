@@ -38,6 +38,8 @@ setup: |
   command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
   uv sync --extra libero
+  # LIBERO asks for a dataset path on first import; answer N to write the default config.
+  echo N | uv run --extra libero python -c "import libero.libero"
 
 run: |
   set -euo pipefail
