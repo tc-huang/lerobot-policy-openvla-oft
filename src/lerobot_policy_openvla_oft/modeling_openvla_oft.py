@@ -1,9 +1,16 @@
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from typing import Any
 
 import torch
+from accelerate import init_empty_weights
 from lerobot.policies import PreTrainedPolicy
+from lerobot.policies.utils import log_model_loading_keys
 from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS, OBS_STATE
+from lerobot.utils.device_utils import resolve_safetensors_device
+from safetensors.torch import load_file
 from torch import Tensor, nn
 
 from .configuration_openvla_oft import OpenVLAOFTConfig
@@ -34,6 +41,40 @@ def build_model(config: OpenVLAOFTConfig) -> OpenVLAOFT:
     )
 
 
+_SKIP_WEIGHT_INIT = ContextVar("openvla_oft_skip_weight_init", default=False)
+
+
+@contextmanager
+def skip_weight_init() -> Iterator[None]:
+    """Builds policies with parameters on the meta device, for weights about to be loaded.
+
+    Buffers are still created normally, because checkpoints do not contain them.
+    """
+    token = _SKIP_WEIGHT_INIT.set(True)
+    try:
+        yield
+    finally:
+        _SKIP_WEIGHT_INIT.reset(token)
+
+
+def load_weights(module: nn.Module, state_dict: dict[str, Tensor], strict: bool = True) -> list[str]:
+    """Loads `state_dict` into `module` by adopting its tensors instead of copying them.
+
+    Tensors are cast to the dtype of the parameters they replace. Parameters the
+    state dict does not provide, such as the action head of the base OpenVLA model,
+    get PyTorch's default initialization. Returns the names of those parameters.
+    """
+    expected = module.state_dict()
+    state_dict = {k: v.to(expected[k].dtype) for k, v in state_dict.items() if k in expected}
+    missing = module.load_state_dict(state_dict, strict=strict, assign=True).missing_keys
+    device = next(iter(state_dict.values())).device if state_dict else torch.device("cpu")
+    for submodule in module.modules():
+        if any(p.is_meta for p in submodule.parameters(recurse=False)):
+            submodule.to_empty(device=device, recurse=False)
+            submodule.reset_parameters()
+    return missing
+
+
 def cast_parameters(module: nn.Module, dtype: torch.dtype) -> None:
     """Casts the parameters of `module` to `dtype`, leaving buffers unchanged.
 
@@ -60,11 +101,27 @@ class OpenVLAOFTPolicy(PreTrainedPolicy):
         super().__init__(config, dataset_stats)
         config.validate_features()
         self.config = config
-        self.model = build_model(config)
+        with init_empty_weights(include_buffers=False) if _SKIP_WEIGHT_INIT.get() else nullcontext():
+            self.model = build_model(config)
         cast_parameters(self.model, self.dtype)
         if config.proprio_projector_fp32 and self.model.proprio_projector is not None:
             cast_parameters(self.model.proprio_projector, torch.float32)
         self.reset()
+
+    @classmethod
+    def from_pretrained(cls, *args: Any, **kwargs: Any) -> "OpenVLAOFTPolicy":
+        """LeRobot's `from_pretrained`, without first randomly initializing the weights it loads."""
+        with skip_weight_init():
+            return super().from_pretrained(*args, **kwargs)
+
+    @classmethod
+    def _load_as_safetensor(
+        cls, model: "OpenVLAOFTPolicy", model_file: str, map_location: str, strict: bool
+    ) -> "OpenVLAOFTPolicy":
+        state_dict = load_file(model_file, device=resolve_safetensors_device(map_location))
+        missing = load_weights(model, state_dict, strict=strict)
+        log_model_loading_keys(missing, sorted(state_dict.keys() - model.state_dict().keys()))
+        return model
 
     @property
     def dtype(self) -> torch.dtype:

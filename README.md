@@ -342,9 +342,20 @@ Notes:
 - **LeRobot `use_amp`.** Leave `--policy.use_amp` disabled. The policy already
   applies autocast based on `dtype`; enabling `use_amp` would add a second
   mixed-precision layer through `accelerate`.
-- **Loading memory.** The network is built in float32 and then cast to
-  `dtype`, so constructing the full model briefly needs about 30 GB of host
-  memory. This is revisited together with checkpoint conversion.
+- **Loading without random initialization.** `OpenVLAOFTPolicy.from_pretrained`
+  builds the network with its parameters on PyTorch's meta device, so they take
+  no memory and are not randomly initialized, and then adopts the checkpoint's
+  tensors as the parameters (`load_state_dict(..., assign=True)`), on the target
+  device and cast to each parameter's dtype. Buffers are created normally,
+  because checkpoints do not contain them. Parameters the checkpoint lacks,
+  such as the action head and proprio projector of the base OpenVLA model, get
+  PyTorch's default initialization afterwards. Training from scratch with
+  `--policy.type` still builds and initializes the network as usual. On an
+  Apple M5 Max, loading the libero-spatial checkpoint went from 55.2 seconds
+  and a 54 GB peak of host memory to 3.1 seconds and 30.6 GB, with identical
+  parameters and buffers; the remaining peak is mostly the memory-mapped
+  checkpoint file. This matters most for multi-GPU training, where every
+  process loads its own copy.
 - **Testing.** `build_model` is the only place that knows the full-size
   architecture. Tests replace it with a tiny network, so the configuration
   contains no test-only fields.
@@ -611,8 +622,10 @@ How this is verified:
 - **Tests.** `tests/test_convert_checkpoint.py` builds a released-format state
   dict from a tiny model, converts it back, and requires every value to be
   identical, plus failure cases for unknown and missing keys.
-- **Real conversion.** `libero-spatial` converted on an Apple M5 Max in about
-  100 seconds on the CPU, with a peak of 38 GB of host memory. Eight spot-checked
+- **Real conversion.** `libero-spatial` converts on an Apple M5 Max in 10.6
+  seconds on the CPU, with a peak of 15.6 GB of host memory (100 seconds and
+  38 GB before the network was built without random initialization, §7; the
+  output is byte-identical). Eight spot-checked
   tensors (DINOv2, SigLIP, vision projector, Llama-2, action head, proprio
   projector) are bit-identical to the released files, including the float32
   proprio projector. Reloaded with `from_pretrained`, the policy predicts a

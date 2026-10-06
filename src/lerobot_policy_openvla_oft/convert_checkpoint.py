@@ -26,7 +26,7 @@ from torch import Tensor
 from .configuration_openvla_oft import OpenVLAOFTConfig
 from .language_model import BidirectionalLlama, openvla_llama_config
 from .model import OpenVLAOFT
-from .modeling_openvla_oft import OpenVLAOFTPolicy
+from .modeling_openvla_oft import OpenVLAOFTPolicy, load_weights, skip_weight_init
 from .processor_openvla_oft import OpenVLALiberoGripperProcessorStep, make_openvla_oft_pre_post_processors
 from .vision_backbone import FusedVisionBackbone
 
@@ -124,7 +124,7 @@ def load_released_weights(
     proprio_projector: dict[str, Tensor],
 ) -> None:
     """Loads a released OpenVLA-OFT checkpoint into `model`."""
-    model.load_state_dict(convert_released_weights(model, vla, action_head, proprio_projector), strict=True)
+    load_weights(model, convert_released_weights(model, vla, action_head, proprio_projector))
 
 
 def save_base_policy(output_dir: Path, config: OpenVLAOFTConfig, weights: dict[str, Tensor]) -> None:
@@ -196,7 +196,8 @@ def convert(repo_id: str, output_dir: Path, revision: str | None = None) -> None
     stats = convert_dataset_statistics(checkpoint / "dataset_statistics.json")
     config = libero_config(stats)
 
-    policy = OpenVLAOFTPolicy(config)
+    with skip_weight_init():
+        policy = OpenVLAOFTPolicy(config)
     (action_head,) = checkpoint.glob("action_head--*.pt")
     (proprio_projector,) = checkpoint.glob("proprio_projector--*.pt")
     load_released_weights(

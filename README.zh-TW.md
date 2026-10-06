@@ -303,8 +303,16 @@ Policy 讀取以下 batch key，全部由 preprocessor 產生：
   算 RoPE。
 - **LeRobot 的 `use_amp`。** 請保持 `--policy.use_amp` 關閉。Policy 已經依
   `dtype` 套用 autocast；開啟 `use_amp` 會透過 `accelerate` 再疊加一層混合精度。
-- **載入時的記憶體。** 網路先以 float32 建立再轉成 `dtype`，因此建立完整模型時會
-  短暫需要約 30 GB 的主機記憶體。這點會在 checkpoint 轉換時一併處理。
+- **載入時不做隨機初始化。** `OpenVLAOFTPolicy.from_pretrained` 建立網路時，把參數
+  放在 PyTorch 的 meta device 上，因此不占記憶體，也不做隨機初始化；接著直接採用
+  checkpoint 的 tensor 作為參數（`load_state_dict(..., assign=True)`），放在目標裝
+  置上並轉成各參數的 dtype。Buffer 照常建立，因為 checkpoint 不含 buffer。
+  Checkpoint 中沒有的參數，例如 base OpenVLA 模型的 action head 與 proprio
+  projector，之後再以 PyTorch 的預設方式初始化。以 `--policy.type` 從頭訓練時，仍
+  照常建立並初始化網路。在 Apple M5 Max 上，載入 libero-spatial checkpoint 從 55.2
+  秒、主機記憶體峰值 54 GB，降到 3.1 秒、30.6 GB，參數與 buffer 完全相同；剩下的峰
+  值大多是以 memory map 讀入的 checkpoint 檔案。多 GPU 訓練時每個 process 都會各自
+  載入一份，因此這點在多 GPU 時最為重要。
 - **測試。** `build_model` 是唯一知道完整尺寸架構的地方。Test 會把它換成小型網
   路，因此 configuration 中沒有只為測試而設的欄位。
 
@@ -547,8 +555,9 @@ Key 對應：
 - **Test。** `tests/test_convert_checkpoint.py` 從小型模型產生釋出格式的
   state dict，再轉換回來，要求每個值完全相同；另外也測試未知 key 與缺少 key 的失
   敗情況。
-- **實際轉換。** 在 Apple M5 Max 上以 CPU 轉換 `libero-spatial` 約需 100 秒，主機
-  記憶體峰值為 38 GB。抽查的 8 個 tensor（DINOv2、SigLIP、vision projector、
+- **實際轉換。** 在 Apple M5 Max 上以 CPU 轉換 `libero-spatial` 需 10.6 秒，主機記
+  憶體峰值為 15.6 GB（改為不做隨機初始化之前為 100 秒、38 GB，見 §7；輸出逐位元相
+  同）。抽查的 8 個 tensor（DINOv2、SigLIP、vision projector、
   Llama-2、action head、proprio projector）與釋出檔案逐位元相同，包括 float32 的
   proprio projector。以 `from_pretrained` 重新載入後，policy 在 MPS 上以 5.7 秒預
   測出數值有限、shape 為 `(1, 8, 7)` 的 action chunk。

@@ -100,3 +100,7 @@ def test_base_policy_loads_vla_weights_and_initializes_new_modules(tmp_path):
             continue
         torch.testing.assert_close(loaded[key], value, rtol=0, atol=0)
     assert OpenVLAOFTConfig.from_pretrained(tmp_path).input_features == {}
+    assert not any(t.is_meta for t in [*policy.parameters(), *policy.buffers()])
+    for module in (policy.model.action_head, policy.model.proprio_projector):
+        weights = torch.cat([p.flatten() for p in module.parameters()])
+        assert torch.isfinite(weights).all() and weights.std() > 0

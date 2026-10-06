@@ -8,7 +8,6 @@ name: openvla-oft-lora-train
 resources:
   infra: runpod
   disk_size: 100
-  # Loading the policy for training peaks at about 45 GB of host memory.
   ordered:
     - accelerators: L40:1
     - accelerators: L40S:1
