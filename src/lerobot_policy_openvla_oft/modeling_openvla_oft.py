@@ -12,6 +12,15 @@ from .language_model import BidirectionalLlama, openvla_llama_config
 from .model import OpenVLAOFT
 from .vision_backbone import FusedVisionBackbone
 
+# Every linear layer of the pretrained VLA: the ViT attention and MLP layers, the
+# vision projector, and the Llama attention and MLP projections. Matches the
+# original "all-linear" LoRA, minus the layers this port removed.
+LORA_TARGET_MODULES = (
+    r"model\.(vision\..*\.(attn\.(qkv|proj)|mlp\.(fc1|fc2))"
+    r"|vision_projector\.fc[123]"
+    r"|llm\..*\.(q|k|v|o|gate|up|down)_proj)"
+)
+
 
 def build_model(config: OpenVLAOFTConfig) -> OpenVLAOFT:
     """Builds the full-size OpenVLA-OFT network described by `config`."""
@@ -56,6 +65,22 @@ class OpenVLAOFTPolicy(PreTrainedPolicy):
 
     def get_optim_params(self) -> list[torch.nn.Parameter]:
         return [p for p in self.parameters() if p.requires_grad]
+
+    def _get_default_peft_targets(self) -> dict[str, Any]:
+        """LoRA defaults of the original recipe for `lerobot-train --peft.*`.
+
+        LoRA goes on every linear layer of the pretrained VLA, while the modules that
+        OpenVLA-OFT adds are trained in full. LeRobot's CLI always passes `--peft.r`
+        (default 16), so the original rank 32 has to be set there.
+        """
+        new_modules = ("action_head", "proprio_projector")
+        return {
+            "target_modules": LORA_TARGET_MODULES,
+            "modules_to_save": [name for name in new_modules if getattr(self.model, name) is not None],
+            "lora_alpha": 16,
+            "lora_dropout": 0.0,
+            "init_lora_weights": "gaussian",
+        }
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict[str, float]]:
         """Computes the mean L1 loss between predicted and target normalized action chunks."""

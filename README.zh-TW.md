@@ -722,3 +722,89 @@ suite 500 個 episode）。論文則是三個 seed 的平均。
 成功率最低的任務是 LIBERO-Long 任務 8（78%，把兩個摩卡壺放上爐子）、LIBERO-Goal
 任務 3（86%）與 LIBERO-Spatial 任務 5（90%）。Spatial 任務 5 正是 lerobot#4390 影
 響的任務；本次使用 MuJoCo 3.3.7，低於受影響的 3.4 以上版本。
+
+### 11. LoRA fine-tuning
+
+Fine-tune 採用 LeRobot 本身的 PEFT 流程
+（[PEFT training guide](https://huggingface.co/docs/lerobot/peft_training)）：
+`lerobot-train` 從一個預訓練的 LeRobot policy（`--policy.path`）開始，套上 LoRA
+adapter（`--peft.*`），只儲存 adapter 與完整訓練的模組。對 OpenVLA-OFT 而言，這個
+預訓練 policy 就是以 `convert_checkpoint.py --base` 轉換的 base OpenVLA 模型。
+
+```bash
+# 1. 轉換一次 base OpenVLA 模型（約 15 GB）。
+uv run python -m lerobot_policy_openvla_oft.convert_checkpoint --base \\
+    --repo-id openvla/openvla-7b \\
+    --output-dir outputs/checkpoints/openvla-7b
+
+# 2. 以 8 張 GPU 做 LoRA fine-tune（每張 8 筆，共 64 筆）。
+uv run accelerate launch --multi_gpu --num_processes=8 $(uv run which lerobot-train) \\
+    --policy.path=outputs/checkpoints/openvla-7b \\
+    --policy.push_to_hub=false \\
+    --peft.method_type=LORA \\
+    --peft.r=32 \\
+    --dataset.repo_id=lerobot/libero \\
+    --dataset.image_transforms.enable=true \\
+    --dataset.image_transforms.max_num_transforms=4 \\
+    --dataset.image_transforms.tfs='{"brightness": {"type": "ColorJitter", "kwargs": {"brightness": [0.8, 1.2]}}, "contrast": {"type": "ColorJitter", "kwargs": {"contrast": [0.8, 1.2]}}, "saturation": {"type": "ColorJitter", "kwargs": {"saturation": [0.8, 1.2]}}, "hue": {"type": "ColorJitter", "kwargs": {"hue": [-0.05, 0.05]}}}' \\
+    --batch_size=8 \\
+    --steps=150000 \\
+    --output_dir=outputs/train/openvla-oft-libero
+```
+
+| 設定                 | 值                                                                                                | 設定方式                                     | 來源                                                                            |
+| -------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------- |
+| 起點                 | `openvla/openvla-7b`                                                                              | `--policy.path` 指向轉換後的 base            | 原 repo `vla-scripts/finetune.py:71`（`vla_path` 的預設值），於 `:835-837` 載入 |
+| LoRA rank            | 32                                                                                                | `--peft.r=32`                                | 論文 Table IV；原 repo `vla-scripts/finetune.py:107`                            |
+| LoRA alpha           | 16                                                                                                | Policy 預設值                                | 原 repo `vla-scripts/finetune.py:849`（`min(rank, 16)`）；論文未提及            |
+| LoRA dropout         | 0                                                                                                 | Policy 預設值                                | 原 repo `vla-scripts/finetune.py:108`；論文未提及                               |
+| LoRA 初始化          | Gaussian                                                                                          | Policy 預設值                                | 原 repo `vla-scripts/finetune.py:852`；論文未提及                               |
+| LoRA 套用對象        | Vision backbone、vision projector 與 language model 的所有 linear 層                              | Policy 預設值（`LORA_TARGET_MODULES`）       | 原 repo `vla-scripts/finetune.py:851`（`all-linear`）                           |
+| 完整訓練的模組       | Action head（151M）與 proprio projector（17M）                                                    | Policy 預設值（`modules_to_save`）           | 論文 Table IV；原 repo `vla-scripts/finetune.py:876-896`、`:927-933`            |
+| Batch size           | 每張 GPU 8 筆，8 張 GPU 共 64 筆                                                                  | `--batch_size=8` 搭配 8 個 process           | 論文 Table IV；原 repo `vla-scripts/finetune.py:88`                             |
+| Learning rate 與衰減 | 5e-4，100K 步後 ×0.1                                                                              | Policy 的預設設定（§1）                      | 論文 Table IV、App. D                                                           |
+| 訓練步數             | 150K（LIBERO-Goal 為 50K）                                                                        | `--steps`                                    | 論文 Table IV                                                                   |
+| 隨機 crop            | 影像面積的 90%                                                                                    | Policy（§8.3）                               | 論文 Table IV                                                                   |
+| Color jitter         | Brightness、contrast `[0.8, 1.2]`、saturation `[0.8, 1.2]`、hue `[-0.05, 0.05]`，依此順序全部套用 | `--dataset.image_transforms.*`               | 論文 Table IV；原 repo `prismatic/vla/datasets/datasets.py:152-165`             |
+| 混合精度             | 由 policy 進行 bfloat16 autocast                                                                  | 不要對 `accelerate` 傳入 `--mixed_precision` | §7                                                                              |
+
+LoRA 參數量為什麼與論文相符：對每個目標層使用 rank 32，adapter 共有 107.9M 個參
+數。原始實作對整個模型套用 `all-linear`，包括本專案移除的 vision 層（§2）與
+language-model head（§4）；把這些算進去是 110.8M，也就是論文 Table IV 中的「111M
+LoRA adapter」。`tests/test_peft.py` 會確認 `LORA_TARGET_MODULES` 選中的正好是完整尺
+寸網路中的所有 linear 層。
+
+與 LeRobot 的銜接方式：
+
+- **不含 features 的 base checkpoint。** 轉換後的 base 中 `input_features` 與
+  `output_features` 都是空的，因此 `lerobot-train` 會從 dataset 取得。Base 不含
+  action head 與 proprio projector；LeRobot 以非嚴格模式載入 checkpoint，所以這兩
+  個模組會保留 PyTorch 的初始化，與原始實作相同（`vla-scripts/finetune.py:876-896`）。
+- **Dataset 統計值。** 隨 base 存下的 processor 使用 LeRobot 的
+  `normalizer_processor` 與 `unnormalizer_processor`（§8.2），`lerobot-train` 會把
+  dataset 統計值注入其中。
+- **PEFT 預設值。** `OpenVLAOFTPolicy._get_default_peft_targets()` 提供套用對象、完整
+  訓練的模組、alpha、dropout 與初始化方式。LeRobot 的 CLI 一定會傳入 `--peft.r`
+  （預設 16），因此 rank 必須在指令中設定。
+- **Checkpoint。** 每個 checkpoint 包含 LoRA adapter，以及 action head 與 proprio
+  projector；它的 adapter 設定會記錄 base 目錄的路徑。評估 fine-tune 後的 policy
+  時，把它的 checkpoint 傳給 `--policy.path`；LeRobot 會從記錄的路徑載入 base，因此
+  base 目錄必須存在於相同的位置。
+
+與原始實作的差異（本專案）：
+
+- **Brightness jitter。** 原始實作是加上 `[-0.2, 0.2]` 之間的隨機位移
+  （`dlimp/augmentations.py` 中的 `tf.image.stateless_random_brightness`）；
+  torchvision 的 `ColorJitter` 則是乘上 `[0.8, 1.2]` 之間的倍數。
+- **增強的順序。** 原始實作先 crop 再做 color jitter；本專案由 dataset 先做 jitter，
+  再由 policy crop。色彩轉換對每個像素的作用相同，因此順序只會透過 0 與 1 的截斷產
+  生影響。
+- **不合併 adapter。** 原始實作在每個 checkpoint 都把 LoRA 權重合併進模型
+  （`vla-scripts/finetune.py:653-660`）；LeRobot 則分開保存。
+- **訓練資料。** `lerobot/libero` 以 LeRobot 格式收錄 LIBERO 的四個 suite。它的示範
+  資料是否與原始實作過濾過的 `*_no_noops` RLDS dataset 相同，目前尚未確認。
+
+驗證方式：`tests/test_peft.py` 在小型 policy 上執行 `lerobot-train` 的包裝流程，確
+認只有 LoRA adapter、action head 與 proprio projector 可訓練；使用原始的 alpha、
+dropout 與初始化方式；adapter 存檔後重新載入結果一致；以及 base policy 能精確載入
+VLA 權重，並初始化新增的模組。目前尚未進行實際訓練。

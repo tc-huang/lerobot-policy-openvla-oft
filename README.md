@@ -791,3 +791,99 @@ The lowest tasks are LIBERO-Long task 8 (78%, two moka pots on the stove),
 LIBERO-Goal task 3 (86%), and LIBERO-Spatial task 5 (90%). Spatial task 5 is
 the one affected by lerobot#4390; this run used MuJoCo 3.3.7, below the
 affected 3.4 range.
+
+### 11. LoRA fine-tuning
+
+Fine-tuning follows LeRobot's own PEFT workflow
+([PEFT training guide](https://huggingface.co/docs/lerobot/peft_training)):
+`lerobot-train` starts from a pretrained LeRobot policy (`--policy.path`), wraps
+it with LoRA adapters (`--peft.*`), and saves only the adapters and the fully
+trained modules. For OpenVLA-OFT, the pretrained policy is the base OpenVLA
+model converted by `convert_checkpoint.py --base`.
+
+```bash
+# 1. Convert the base OpenVLA model once (about 15 GB).
+uv run python -m lerobot_policy_openvla_oft.convert_checkpoint --base \\
+    --repo-id openvla/openvla-7b \\
+    --output-dir outputs/checkpoints/openvla-7b
+
+# 2. Fine-tune with LoRA on 8 GPUs (8 per GPU, 64 in total).
+uv run accelerate launch --multi_gpu --num_processes=8 $(uv run which lerobot-train) \\
+    --policy.path=outputs/checkpoints/openvla-7b \\
+    --policy.push_to_hub=false \\
+    --peft.method_type=LORA \\
+    --peft.r=32 \\
+    --dataset.repo_id=lerobot/libero \\
+    --dataset.image_transforms.enable=true \\
+    --dataset.image_transforms.max_num_transforms=4 \\
+    --dataset.image_transforms.tfs='{"brightness": {"type": "ColorJitter", "kwargs": {"brightness": [0.8, 1.2]}}, "contrast": {"type": "ColorJitter", "kwargs": {"contrast": [0.8, 1.2]}}, "saturation": {"type": "ColorJitter", "kwargs": {"saturation": [0.8, 1.2]}}, "hue": {"type": "ColorJitter", "kwargs": {"hue": [-0.05, 0.05]}}}' \\
+    --batch_size=8 \\
+    --steps=150000 \\
+    --output_dir=outputs/train/openvla-oft-libero
+```
+
+| Setting                 | Value                                                                                                      | How it is set                                   | Source                                                                        |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------- |
+| Starting point          | `openvla/openvla-7b`                                                                                       | `--policy.path` to the converted base           | Repo `vla-scripts/finetune.py:71` (`vla_path` default), loaded at `:835-837`  |
+| LoRA rank               | 32                                                                                                         | `--peft.r=32`                                   | Paper Table IV; Repo `vla-scripts/finetune.py:107`                            |
+| LoRA alpha              | 16                                                                                                         | Policy default                                  | Repo `vla-scripts/finetune.py:849` (`min(rank, 16)`); not stated in the paper |
+| LoRA dropout            | 0                                                                                                          | Policy default                                  | Repo `vla-scripts/finetune.py:108`; not stated in the paper                   |
+| LoRA initialization     | Gaussian                                                                                                   | Policy default                                  | Repo `vla-scripts/finetune.py:852`; not stated in the paper                   |
+| LoRA targets            | Every linear layer of the vision backbone, vision projector, and language model                            | Policy default (`LORA_TARGET_MODULES`)          | Repo `vla-scripts/finetune.py:851` (`all-linear`)                             |
+| Fully trained modules   | Action head (151M) and proprio projector (17M)                                                             | Policy default (`modules_to_save`)              | Paper Table IV; Repo `vla-scripts/finetune.py:876-896`, `:927-933`            |
+| Batch size              | 8 per GPU, 64 in total on 8 GPUs                                                                           | `--batch_size=8` with 8 processes               | Paper Table IV; Repo `vla-scripts/finetune.py:88`                             |
+| Learning rate and decay | 5e-4, ×0.1 after 100K steps                                                                                | Policy presets (§1)                             | Paper Table IV, App. D                                                        |
+| Training steps          | 150K (50K for LIBERO-Goal)                                                                                 | `--steps`                                       | Paper Table IV                                                                |
+| Random crop             | 90% of the area                                                                                            | Policy (§8.3)                                   | Paper Table IV                                                                |
+| Color jitter            | Brightness, contrast `[0.8, 1.2]`, saturation `[0.8, 1.2]`, hue `[-0.05, 0.05]`, all applied in this order | `--dataset.image_transforms.*`                  | Paper Table IV; Repo `prismatic/vla/datasets/datasets.py:152-165`             |
+| Mixed precision         | bfloat16 autocast from the policy                                                                          | Do not pass `--mixed_precision` to `accelerate` | §7                                                                            |
+
+Why LoRA counts match the paper: rank 32 on every targeted layer gives 107.9M
+adapter parameters. The original applies `all-linear` to the full model,
+including the vision layers this port removes (§2) and the language-model head
+(§4); counting those gives 110.8M, the paper's "111M LoRA adapter" in Table IV.
+`tests/test_peft.py` checks that `LORA_TARGET_MODULES` selects exactly the
+linear layers of the full-size network.
+
+How the pieces fit LeRobot:
+
+- **Base checkpoint without features.** The converted base has empty
+  `input_features` and `output_features`, so `lerobot-train` takes them from the
+  dataset. It holds no action head or proprio projector; LeRobot loads
+  checkpoints non-strictly, so these keep their PyTorch initialization, as in
+  the original (`vla-scripts/finetune.py:876-896`).
+- **Dataset statistics.** The processors saved with the base contain LeRobot's
+  `normalizer_processor` and `unnormalizer_processor` (§8.2), into which
+  `lerobot-train` injects the dataset statistics.
+- **PEFT defaults.** `OpenVLAOFTPolicy._get_default_peft_targets()` supplies the
+  targets, the fully trained modules, alpha, dropout, and initialization.
+  LeRobot's CLI always passes `--peft.r` (default 16), so the rank has to be set
+  on the command line.
+- **Checkpoints.** Each checkpoint holds the LoRA adapters plus the action head
+  and proprio projector, and its adapter config points back to the base
+  directory. To evaluate a fine-tuned policy, pass its checkpoint as
+  `--policy.path`; LeRobot loads the base from that recorded path, so the base
+  directory must exist at the same location.
+
+Differences from the original implementation (this port):
+
+- **Brightness jitter.** The original adds a random offset in `[-0.2, 0.2]`
+  (`tf.image.stateless_random_brightness` in `dlimp/augmentations.py`);
+  torchvision's `ColorJitter` multiplies by a factor in `[0.8, 1.2]` instead.
+- **Augmentation order.** The original crops before the color jitter; here the
+  dataset applies the jitter and the policy crops afterwards. The color
+  transforms act on every pixel alike, so the order only matters through
+  clipping at 0 and 1.
+- **Unmerged adapters.** The original merges the LoRA weights into the model at
+  every checkpoint (`vla-scripts/finetune.py:653-660`); LeRobot keeps them
+  separate.
+- **Training data.** `lerobot/libero` contains the four LIBERO suites in
+  LeRobot's format. Whether its demonstrations match the original's filtered
+  `*_no_noops` RLDS datasets has not been checked yet.
+
+How this was verified: `tests/test_peft.py` runs the `lerobot-train` wrapping
+path on a tiny policy and checks that only the LoRA adapters, the action head,
+and the proprio projector are trainable; that the original alpha, dropout, and
+initialization are used; that an adapter survives saving and reloading; and
+that a base policy loads the VLA weights exactly while initializing the new
+modules. A real training run has not been done yet.

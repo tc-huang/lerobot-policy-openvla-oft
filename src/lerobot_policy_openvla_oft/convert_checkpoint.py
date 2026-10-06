@@ -1,9 +1,13 @@
-"""Converts a released OpenVLA-OFT checkpoint into a LeRobot policy directory.
+"""Converts a released OpenVLA or OpenVLA-OFT checkpoint into a LeRobot policy directory.
 
 Usage:
     python -m lerobot_policy_openvla_oft.convert_checkpoint \\
         --repo-id moojink/openvla-7b-oft-finetuned-libero-spatial \\
         --output-dir outputs/checkpoints/libero-spatial
+
+    python -m lerobot_policy_openvla_oft.convert_checkpoint --base \\
+        --repo-id openvla/openvla-7b \\
+        --output-dir outputs/checkpoints/openvla-7b
 """
 
 import argparse
@@ -16,21 +20,19 @@ from huggingface_hub import snapshot_download
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.processor import PolicyProcessorPipeline
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
-from safetensors.torch import load_file
+from safetensors.torch import load_file, save_file
 from torch import Tensor
 
 from .configuration_openvla_oft import OpenVLAOFTConfig
+from .language_model import BidirectionalLlama, openvla_llama_config
 from .model import OpenVLAOFT
 from .modeling_openvla_oft import OpenVLAOFTPolicy
 from .processor_openvla_oft import OpenVLALiberoGripperProcessorStep, make_openvla_oft_pre_post_processors
+from .vision_backbone import FusedVisionBackbone
 
-CHECKPOINT_FILES = [
-    "model.safetensors.index.json",
-    "model-*.safetensors",
-    "action_head--*.pt",
-    "proprio_projector--*.pt",
-    "dataset_statistics.json",
-]
+BASE_FILES = ["model.safetensors.index.json", "model-*.safetensors"]
+CHECKPOINT_FILES = [*BASE_FILES, "action_head--*.pt", "proprio_projector--*.pt", "dataset_statistics.json"]
+NEW_MODULES = ("action_head.", "proprio_projector.")
 
 LIBERO_IMAGE_KEYS = (f"{OBS_IMAGES}.image", f"{OBS_IMAGES}.image2")
 
@@ -86,26 +88,58 @@ def pruned_prefixes(model: OpenVLAOFT) -> tuple[str, ...]:
     return tuple(prefixes)
 
 
+def convert_released_weights(
+    model: OpenVLAOFT,
+    vla: dict[str, Tensor],
+    action_head: dict[str, Tensor] | None = None,
+    proprio_projector: dict[str, Tensor] | None = None,
+) -> dict[str, Tensor]:
+    """Maps released weights onto `model`'s parameter names, requiring every one to be covered.
+
+    Weights that this port intentionally removed (the language-model head and the
+    unused vision layers) are dropped; any other mismatch raises an error. Without
+    `action_head` and `proprio_projector`, as for the base OpenVLA model, the result
+    covers only the vision backbone, the vision projector, and the language model.
+    """
+    converted = {new: value for key, value in vla.items() if (new := convert_vla_key(key)) is not None}
+    converted |= {convert_action_head_key(k): v for k, v in (action_head or {}).items()}
+    converted |= {convert_proprio_projector_key(k): v for k, v in (proprio_projector or {}).items()}
+
+    expected = set(model.state_dict())
+    if action_head is None and proprio_projector is None:
+        expected = {k for k in expected if not k.startswith(NEW_MODULES)}
+    unexpected = [k for k in converted.keys() - expected if not k.startswith(pruned_prefixes(model))]
+    if unexpected:
+        raise KeyError(f"Checkpoint keys without a destination: {sorted(unexpected)}")
+    missing = expected - converted.keys()
+    if missing:
+        raise KeyError(f"Parameters missing from the checkpoint: {sorted(missing)}")
+    return {k: converted[k] for k in expected}
+
+
 def load_released_weights(
     model: OpenVLAOFT,
     vla: dict[str, Tensor],
     action_head: dict[str, Tensor],
     proprio_projector: dict[str, Tensor],
 ) -> None:
-    """Loads released weights into `model`, requiring every parameter to be covered.
+    """Loads a released OpenVLA-OFT checkpoint into `model`."""
+    model.load_state_dict(convert_released_weights(model, vla, action_head, proprio_projector), strict=True)
 
-    Weights that this port intentionally removed (the language-model head and the
-    unused vision layers) are dropped; any other mismatch raises an error.
+
+def save_base_policy(output_dir: Path, config: OpenVLAOFTConfig, weights: dict[str, Tensor]) -> None:
+    """Writes a policy directory with only pretrained OpenVLA weights.
+
+    The configuration has no input or output features, so `lerobot-train` fills them
+    in from the dataset, and LeRobot's non-strict loading leaves the action head and
+    proprio projector, which the base model does not have, at their initialization.
     """
-    converted = {new: value for key, value in vla.items() if (new := convert_vla_key(key)) is not None}
-    converted |= {convert_action_head_key(k): v for k, v in action_head.items()}
-    converted |= {convert_proprio_projector_key(k): v for k, v in proprio_projector.items()}
-
-    expected = model.state_dict().keys()
-    unexpected = [k for k in converted.keys() - expected if not k.startswith(pruned_prefixes(model))]
-    if unexpected:
-        raise KeyError(f"Checkpoint keys without a destination: {sorted(unexpected)}")
-    model.load_state_dict({k: v for k, v in converted.items() if k in expected}, strict=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    save_file({f"model.{k}": v.contiguous() for k, v in weights.items()}, output_dir / "model.safetensors")
+    config.save_pretrained(output_dir)
+    preprocessor, postprocessor = make_openvla_oft_pre_post_processors(config)
+    preprocessor.save_pretrained(output_dir)
+    postprocessor.save_pretrained(output_dir)
 
 
 def convert_dataset_statistics(path: Path) -> dict[str, dict[str, Tensor]]:
@@ -149,20 +183,25 @@ def libero_processors(
     return preprocessor, postprocessor
 
 
+def load_vla_shards(checkpoint: Path) -> dict[str, Tensor]:
+    vla: dict[str, Tensor] = {}
+    for shard in sorted(checkpoint.glob("model-*.safetensors")):
+        vla |= load_file(shard)
+    return vla
+
+
 def convert(repo_id: str, output_dir: Path, revision: str | None = None) -> None:
+    """Converts a released OpenVLA-OFT LIBERO checkpoint."""
     checkpoint = Path(snapshot_download(repo_id, revision=revision, allow_patterns=CHECKPOINT_FILES))
     stats = convert_dataset_statistics(checkpoint / "dataset_statistics.json")
     config = libero_config(stats)
 
     policy = OpenVLAOFTPolicy(config)
-    vla: dict[str, Tensor] = {}
-    for shard in sorted(checkpoint.glob("model-*.safetensors")):
-        vla |= load_file(shard)
     (action_head,) = checkpoint.glob("action_head--*.pt")
     (proprio_projector,) = checkpoint.glob("proprio_projector--*.pt")
     load_released_weights(
         policy.model,
-        vla,
+        load_vla_shards(checkpoint),
         torch.load(action_head, map_location="cpu", weights_only=True),
         torch.load(proprio_projector, map_location="cpu", weights_only=True),
     )
@@ -173,6 +212,21 @@ def convert(repo_id: str, output_dir: Path, revision: str | None = None) -> None
     postprocessor.save_pretrained(output_dir)
 
 
+def convert_base(repo_id: str, output_dir: Path, revision: str | None = None) -> None:
+    """Converts the base OpenVLA model into a starting point for fine-tuning."""
+    checkpoint = Path(snapshot_download(repo_id, revision=revision, allow_patterns=BASE_FILES))
+    config = OpenVLAOFTConfig()
+    with torch.device("meta"):
+        model = OpenVLAOFT(
+            FusedVisionBackbone(config.image_size),
+            BidirectionalLlama(openvla_llama_config()),
+            config.chunk_size,
+            action_dim=1,
+            proprio_dim=None,
+        )
+    save_base_policy(output_dir, config, convert_released_weights(model, load_vla_shards(checkpoint)))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -180,8 +234,11 @@ def main() -> None:
     parser.add_argument("--repo-id", required=True, help="Released checkpoint on the Hugging Face Hub.")
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--revision", help="Optional commit, branch, or tag of the checkpoint repository.")
+    parser.add_argument(
+        "--base", action="store_true", help="Convert the base OpenVLA model (no action head) for fine-tuning."
+    )
     args = parser.parse_args()
-    convert(args.repo_id, args.output_dir, args.revision)
+    (convert_base if args.base else convert)(args.repo_id, args.output_dir, args.revision)
 
 
 if __name__ == "__main__":
