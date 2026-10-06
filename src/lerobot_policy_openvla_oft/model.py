@@ -18,6 +18,10 @@ class OpenVLAOFT(nn.Module):
     vectors, so they differ only through their rotary position; bidirectional
     attention lets every placeholder read the whole sequence, and an MLP action head
     regresses the actions from the placeholders' hidden states.
+
+    If the vision backbone uses FiLM, it is conditioned on the average embedding of
+    the prompt tokens and EOS. Like the original, the average includes padding
+    unless `film_mask_padding` is set.
     """
 
     def __init__(
@@ -27,6 +31,7 @@ class OpenVLAOFT(nn.Module):
         chunk_size: int,
         action_dim: int,
         proprio_dim: int | None,
+        film_mask_padding: bool = False,
     ):
         super().__init__()
         self.vision = vision
@@ -35,6 +40,7 @@ class OpenVLAOFT(nn.Module):
         self.llm = llm
         self.action_head = L1RegressionActionHead(llm.hidden_size, action_dim)
         self.num_action_tokens = chunk_size * action_dim
+        self.film_mask_padding = film_mask_padding
 
     def forward(
         self, images: Tensor, input_ids: Tensor, prompt_mask: Tensor, state: Tensor | None = None
@@ -61,7 +67,8 @@ class OpenVLAOFT(nn.Module):
             (B, chunk_size * action_dim, hidden_size) hidden states, one per action
             dimension per chunk step.
         """
-        prefix = self._embed_prefix(input_ids[:, :1], images, state)
+        condition = self._film_condition(input_ids, prompt_mask) if self.vision.uses_film else None
+        prefix = self._embed_prefix(input_ids[:, :1], images, state, condition)
         body, body_mask = self._embed_body(input_ids[:, 1:], prompt_mask[:, 1:])
         prefix_mask = prompt_mask.new_ones(prefix.shape[:2])
         hidden = self.llm(torch.cat([prefix, body], dim=1), torch.cat([prefix_mask, body_mask], dim=1))
@@ -72,8 +79,18 @@ class OpenVLAOFT(nn.Module):
         index = (first_action - 1)[:, None] + torch.arange(self.num_action_tokens, device=hidden.device)
         return hidden.gather(1, index[..., None].expand(-1, -1, hidden.shape[-1]))
 
-    def _embed_prefix(self, bos_ids: Tensor, images: Tensor, state: Tensor | None) -> Tensor:
-        tokens = [self.llm.embed(bos_ids), self.vision_projector(self.vision(images))]
+    def _film_condition(self, input_ids: Tensor, prompt_mask: Tensor) -> Tensor:
+        eos = input_ids.new_full((input_ids.shape[0], 1), self.llm.eos_token_id)
+        embeddings = self.llm.embed(torch.cat([input_ids, eos], dim=1))
+        if not self.film_mask_padding:
+            return embeddings.mean(dim=1)
+        mask = torch.cat([prompt_mask, prompt_mask.new_ones(eos.shape)], dim=1).unsqueeze(-1)
+        return (embeddings * mask).sum(dim=1) / mask.sum(dim=1)
+
+    def _embed_prefix(
+        self, bos_ids: Tensor, images: Tensor, state: Tensor | None, condition: Tensor | None
+    ) -> Tensor:
+        tokens = [self.llm.embed(bos_ids), self.vision_projector(self.vision(images, condition))]
         if self.proprio_projector is not None:
             tokens.append(self.proprio_projector(state))
         return torch.cat(tokens, dim=1)

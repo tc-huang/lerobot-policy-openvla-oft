@@ -56,6 +56,19 @@ def test_trains_lora_and_new_modules_only():
     assert len(lora_layers) == len(linear_layers)
 
 
+def test_trains_film_projections_in_full():
+    policy = OpenVLAOFTPolicy(make_config(pretrained_path="base", use_film=True))
+
+    peft_policy = wrap_like_lerobot_train(policy, r=4)
+
+    trainable = {n for n, p in peft_policy.named_parameters() if p.requires_grad}
+    film = {n for n, _ in peft_policy.named_parameters() if ".film." in n and ".original_module." not in n}
+    assert {n for n in film if ".modules_to_save." in n} <= trainable
+    assert not any("lora_" in n for n in film)
+    for name in ("dinov2", "siglip"):
+        assert any(f"{name}.film.modules_to_save.default.scale" in n for n in trainable)
+
+
 def test_uses_original_lora_hyperparameters():
     policy = OpenVLAOFTPolicy(make_config(pretrained_path="base"))
 
@@ -82,12 +95,13 @@ def test_adapter_round_trip(tmp_path):
     torch.testing.assert_close(reloaded.predict_action_chunk(batch), peft_policy.predict_action_chunk(batch))
 
 
-def test_base_policy_loads_vla_weights_and_initializes_new_modules(tmp_path):
-    config = make_config()
-    source = build_tiny_model(config)
+@pytest.mark.parametrize("use_film", [False, True])
+def test_base_policy_loads_vla_weights_and_initializes_new_modules(tmp_path, use_film):
+    config = make_config(use_film=use_film)
+    source = build_tiny_model(make_config())
     vla, _, _ = released_checkpoint(source)
     torch.manual_seed(1)
-    target = build_tiny_model(config)
+    target = build_tiny_model(make_config())
 
     save_base_policy(
         tmp_path, OpenVLAOFTConfig(device="cpu", dtype="float32"), convert_released_weights(target, vla)
@@ -101,6 +115,9 @@ def test_base_policy_loads_vla_weights_and_initializes_new_modules(tmp_path):
         torch.testing.assert_close(loaded[key], value, rtol=0, atol=0)
     assert OpenVLAOFTConfig.from_pretrained(tmp_path).input_features == {}
     assert not any(t.is_meta for t in [*policy.parameters(), *policy.buffers()])
-    for module in (policy.model.action_head, policy.model.proprio_projector):
+    new_modules = [policy.model.action_head, policy.model.proprio_projector]
+    if use_film:
+        new_modules += [policy.model.vision.dinov2.film, policy.model.vision.siglip.film]
+    for module in new_modules:
         weights = torch.cat([p.flatten() for p in module.parameters()])
         assert torch.isfinite(weights).all() and weights.std() > 0

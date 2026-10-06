@@ -46,6 +46,10 @@ class OpenVLAOFTConfig(PreTrainedConfig):
         proprio_projector_fp32: Keep the proprio projector weights in float32.
         mask_padded_actions: Exclude chunk steps past the end of an episode from the
             loss. When False, they are trained on the repeated last action.
+        use_film: Condition both vision transformers on the task language with FiLM
+            (OpenVLA-OFT+).
+        film_mask_padding: Exclude prompt padding from the language embedding average
+            that conditions FiLM. When False, padding is averaged in as in the original.
         compile_model: Compile the network's forward pass with `torch.compile`.
         compile_mode: `torch.compile` mode used when `compile_model` is True.
         optimizer_lr: Peak learning rate.
@@ -74,6 +78,9 @@ class OpenVLAOFTConfig(PreTrainedConfig):
     proprio_projector_fp32: bool = True
 
     mask_padded_actions: bool = False
+
+    use_film: bool = False
+    film_mask_padding: bool = False
 
     compile_model: bool = False
     compile_mode: str = "default"

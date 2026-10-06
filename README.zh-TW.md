@@ -9,7 +9,7 @@ Liang，2025）移植到 LeRobot v0.6.1，以 `--policy.type openvla_oft` 使用
 `lerobot-eval` 評估，目標是復現論文中的 LIBERO 結果。此外也支援以
 `lerobot-train` 從 `openvla/openvla-7b` 進行 LoRA fine-tune，並以
 `lerobot-rollout` 將 fine-tune 後的 policy 部署到單臂 SO-100 或 SO-101
-follower 手臂上。
+follower 手臂上。OpenVLA-OFT+ 的 FiLM 語言條件化則作為選用功能提供（§12）。
 
 ## 設計
 
@@ -48,6 +48,8 @@ follower 手臂上。
 | 混合精度                       | Forward 在 bfloat16 autocast 下執行 | （跟隨 `dtype`）                                  | 原 repo `vla-scripts/finetune.py:327`；論文未提及                                                      |
 | 補值的 chunk 步驟是否計入 loss | 計入，其值為最後一個 action 的複本  | `mask_padded_actions`（False）                    | 原 repo `prismatic/vla/datasets/rlds/traj_transforms.py:44`、`vla-scripts/finetune.py:390`；論文未提及 |
 | 編譯                           | 關閉                                | `compile_model`、`compile_mode`（`default`）      | 本專案；比照 LeRobot 的 pi0 與 SmolVLA（`compile_model`、`compile_mode`）                              |
+| FiLM（OpenVLA-OFT+）           | 關閉                                | `use_film`                                        | 論文 App. D、Table IV；原 repo `vla-scripts/finetune.py:83`；見 §12                                    |
+| FiLM 平均是否包含 padding      | 包含                                | `film_mask_padding`（False）                      | 原 repo `prismatic/extern/hf/modeling_prismatic.py:581`；論文未提及；見 §12                            |
 
 原始實作在 import 時透過檢查命令列參數來決定 chunk 大小與正規化方式
 （`prismatic/vla/constants.py`）；本專案則將它們明確定義為 configuration 欄位。
@@ -68,7 +70,7 @@ LeRobot 的 `QUANTILES` 與原始實作的 `BOUNDS_Q99` 有兩處不同：原始
 | 輸入影像尺寸          | 224 × 224                     | §2 Vision backbone（`image_size`）                           |
 | LoRA rank             | 32                            | LoRA fine-tuning                                             |
 | 影像增強              | 90% random crop、color jitter | 90% crop：§8.3（`image_crop_scale`）；color jitter：訓練指令 |
-| FiLM                  | 否                            | 不在範圍內                                                   |
+| FiLM                  | 否                            | §12 FiLM（`use_film`）                                       |
 
 ### 2. Vision backbone
 
@@ -785,21 +787,21 @@ uv run accelerate launch --multi_gpu --num_processes=8 $(uv run which lerobot-tr
     --output_dir=outputs/train/openvla-oft-libero
 ```
 
-| 設定                 | 值                                                                                                | 設定方式                                     | 來源                                                                            |
-| -------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------- |
-| 起點                 | `openvla/openvla-7b`                                                                              | `--policy.path` 指向轉換後的 base            | 原 repo `vla-scripts/finetune.py:71`（`vla_path` 的預設值），於 `:835-837` 載入 |
-| LoRA rank            | 32                                                                                                | `--peft.r=32`                                | 論文 Table IV；原 repo `vla-scripts/finetune.py:107`                            |
-| LoRA alpha           | 16                                                                                                | Policy 預設值                                | 原 repo `vla-scripts/finetune.py:849`（`min(rank, 16)`）；論文未提及            |
-| LoRA dropout         | 0                                                                                                 | Policy 預設值                                | 原 repo `vla-scripts/finetune.py:108`；論文未提及                               |
-| LoRA 初始化          | Gaussian                                                                                          | Policy 預設值                                | 原 repo `vla-scripts/finetune.py:852`；論文未提及                               |
-| LoRA 套用對象        | Vision backbone、vision projector 與 language model 的所有 linear 層                              | Policy 預設值（`LORA_TARGET_MODULES`）       | 原 repo `vla-scripts/finetune.py:851`（`all-linear`）                           |
-| 完整訓練的模組       | Action head（151M）與 proprio projector（17M）                                                    | Policy 預設值（`modules_to_save`）           | 論文 Table IV；原 repo `vla-scripts/finetune.py:876-896`、`:927-933`            |
-| Batch size           | 每張 GPU 8 筆，8 張 GPU 共 64 筆                                                                  | `--batch_size=8` 搭配 8 個 process           | 論文 Table IV；原 repo `vla-scripts/finetune.py:88`                             |
-| Learning rate 與衰減 | 5e-4，100K 步後 ×0.1                                                                              | Policy 的預設設定（§1）                      | 論文 Table IV、App. D                                                           |
-| 訓練步數             | 150K（LIBERO-Goal 為 50K）                                                                        | `--steps`                                    | 論文 Table IV                                                                   |
-| 隨機 crop            | 影像面積的 90%                                                                                    | Policy（§8.3）                               | 論文 Table IV                                                                   |
-| Color jitter         | Brightness、contrast `[0.8, 1.2]`、saturation `[0.8, 1.2]`、hue `[-0.05, 0.05]`，依此順序全部套用 | `--dataset.image_transforms.*`               | 論文 Table IV；原 repo `prismatic/vla/datasets/datasets.py:152-165`             |
-| 混合精度             | 由 policy 進行 bfloat16 autocast                                                                  | 不要對 `accelerate` 傳入 `--mixed_precision` | §7                                                                              |
+| 設定                 | 值                                                                                                  | 設定方式                                     | 來源                                                                            |
+| -------------------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------- |
+| 起點                 | `openvla/openvla-7b`                                                                                | `--policy.path` 指向轉換後的 base            | 原 repo `vla-scripts/finetune.py:71`（`vla_path` 的預設值），於 `:835-837` 載入 |
+| LoRA rank            | 32                                                                                                  | `--peft.r=32`                                | 論文 Table IV；原 repo `vla-scripts/finetune.py:107`                            |
+| LoRA alpha           | 16                                                                                                  | Policy 預設值                                | 原 repo `vla-scripts/finetune.py:849`（`min(rank, 16)`）；論文未提及            |
+| LoRA dropout         | 0                                                                                                   | Policy 預設值                                | 原 repo `vla-scripts/finetune.py:108`；論文未提及                               |
+| LoRA 初始化          | Gaussian                                                                                            | Policy 預設值                                | 原 repo `vla-scripts/finetune.py:852`；論文未提及                               |
+| LoRA 套用對象        | Vision backbone、vision projector 與 language model 的所有 linear 層                                | Policy 預設值（`LORA_TARGET_MODULES`）       | 原 repo `vla-scripts/finetune.py:851`（`all-linear`）                           |
+| 完整訓練的模組       | Action head（151M）與 proprio projector（17M）；開啟 `use_film` 時另含 FiLM projection（438M，§12） | Policy 預設值（`modules_to_save`）           | 論文 Table IV；原 repo `vla-scripts/finetune.py:876-896`、`:927-933`            |
+| Batch size           | 每張 GPU 8 筆，8 張 GPU 共 64 筆                                                                    | `--batch_size=8` 搭配 8 個 process           | 論文 Table IV；原 repo `vla-scripts/finetune.py:88`                             |
+| Learning rate 與衰減 | 5e-4，100K 步後 ×0.1                                                                                | Policy 的預設設定（§1）                      | 論文 Table IV、App. D                                                           |
+| 訓練步數             | 150K（LIBERO-Goal 為 50K）                                                                          | `--steps`                                    | 論文 Table IV                                                                   |
+| 隨機 crop            | 影像面積的 90%                                                                                      | Policy（§8.3）                               | 論文 Table IV                                                                   |
+| Color jitter         | Brightness、contrast `[0.8, 1.2]`、saturation `[0.8, 1.2]`、hue `[-0.05, 0.05]`，依此順序全部套用   | `--dataset.image_transforms.*`               | 論文 Table IV；原 repo `prismatic/vla/datasets/datasets.py:152-165`             |
+| 混合精度             | 由 policy 進行 bfloat16 autocast                                                                    | 不要對 `accelerate` 傳入 `--mixed_precision` | §7                                                                              |
 
 LoRA 參數量為什麼與論文相符：對每個目標層使用 rank 32，adapter 共有 107.9M 個參
 數。原始實作對整個模型套用 `all-linear`，包括本專案移除的 vision 層（§2）與
@@ -869,3 +871,66 @@ VLA 權重，並初始化新增的模組。
 
 第一次嘗試失敗，原因是 LeRobot 0.6.1 的 `make_policy` 會把 `dataset_meta` 參數傳給
 policy 的建構子；`OpenVLAOFTPolicy` 現在會接受額外的 keyword 參數（`06c414e`）。
+
+### 12. FiLM（OpenVLA-OFT+）
+
+OpenVLA-OFT+ 在 vision backbone 中加入 feature-wise linear modulation（FiLM），讓
+policy 更確實地遵循語言指令（論文 §IV-C、App. C）。論文只在 ALOHA 實驗中使用
+FiLM：手腕相機讓 policy 容易依賴畫面中的線索而忽略指令；LIBERO 則沒有使用。本專案
+預設關閉，以 `--policy.use_film=true` 開啟。
+
+兩個 vision transformer 的每個 block 中，在 attention 與 MLP 子層之間，patch 特徵
+`x` 會依下式調變：
+
+```text
+x ← (1 + γ) ⊙ x + β,    γ = W_γ c + b_γ,    β = W_β c + b_β
+```
+
+其中 `c` 是任務 prompt 的平均語言 embedding，每個 block 各有自己的 `W` 與 `b`。
+`γ` 與 `β` 的每個元素對應一個 hidden unit，由同一張影像的所有 patch，以及同一筆樣本
+的所有相機影像共用。
+
+| 設定                 | 值                                                        | Config 欄位                        | 來源                                                                                                                                             |
+| -------------------- | --------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 是否啟用             | LIBERO 不使用，ALOHA 使用                                 | `use_film`（False）                | 論文 App. D、Table IV、Table V；原 repo `vla-scripts/finetune.py:83`、`LIBERO.md:106`、`ALOHA.md:66`                                             |
+| 調變方式             | `(1 + γ) ⊙ x + β`                                         | （固定）                           | 論文 §IV-C、App. C；原 repo `prismatic/models/film_vit_wrapper.py:72`                                                                            |
+| 位置                 | 每個 block 中，attention 子層之後、MLP 之前               | （固定）                           | 論文 §IV-C、Fig. 8；原 repo `prismatic/models/film_vit_wrapper.py:69-75`                                                                         |
+| Transformer          | DINOv2 與 SigLIP 都使用                                   | （固定）                           | 論文 App. A（OFT change 6）、App. C；原 repo `prismatic/models/film_vit_wrapper.py:196-198`                                                      |
+| 調變單位             | 每個 hidden unit，所有 patch 共用                         | （固定）                           | 論文 §IV-C、App. C；原 repo `prismatic/models/film_vit_wrapper.py:72`                                                                            |
+| Projection           | 每個 block 的 `γ` 與 `β` 各一個仿射映射（`4096 → D_ViT`） | （固定）                           | 論文 App. C；原 repo `prismatic/models/film_vit_wrapper.py:53-54`                                                                                |
+| 初始化               | PyTorch `nn.Linear` 的預設初始化                          | （固定）                           | 原 repo `prismatic/models/film_vit_wrapper.py:53-54`；論文只提到 `γ` 與 `β` 初始時接近零（App. C）                                               |
+| 語言 embedding `c`   | BOS、prompt 與 EOS 在語言模型輸入端 embedding 的平均      | （固定）                           | 論文 §IV-C；原 repo `prismatic/extern/hf/modeling_prismatic.py:575-586`（訓練）、`:994-1003`（推論）、`prismatic/models/film_vit_wrapper.py:242` |
+| 平均是否包含 padding | 包含                                                      | `film_mask_padding`（False）       | 原 repo：padding 不是 action 位置，因此 `prismatic/extern/hf/modeling_prismatic.py:581` 會保留它；論文未提及                                     |
+| 訓練方式             | 完整訓練，不使用 LoRA                                     | Policy 預設值（`modules_to_save`） | 論文 Table V；原 repo `vla-scripts/finetune.py:854-866`（在 LoRA 之後才加入 FiLM）、`:642-646`（儲存整個 vision backbone）                       |
+| 參數量               | 438M                                                      | （推導）                           | 論文 Table V 為 456M，其中包含本專案移除的各 transformer 最後一個 block 的 projection（§2）                                                      |
+
+FiLM 在 LIBERO 上的影響不大：以四個 suite 共同訓練一個 policy，加入 FiLM 的平均成功率
+為 97.0%，不加為 96.8%（論文 Table XIV）。
+
+與原始實作的差異（本專案）：
+
+- **合併的 projection。** 原始實作把每個 timm block 包進
+  `FiLMedVisionTransformerBlock`，各自帶有 `scale` 與 `shift` 層，因此每個 ViT
+  參數都被改名為 `blocks.N.block.*`。本專案的每個 transformer 只有一個
+  `FiLMGenerator`，其 `scale` 與 `shift` 層一次產生所有 block 的 `γ` 與 `β`；
+  權重的第 `N × D_ViT` 到 `(N + 1) × D_ViT` 列就是第 `N` 個 block 的 projection。
+  由於 fan-in 不變，計算結果與初始化分布都和原始實作相同。ViT 的參數名稱維持不變，
+  因此 OFT checkpoint 與 LoRA target 都不受影響，PEFT 也能把每個 generator 當成一個
+  `modules_to_save` 項目完整訓練。
+- **被移除的 block 沒有 projection。** 原始實作也會為最後一個 block 建立
+  projection，但該 block 的輸出從未被讀取（§2）。
+- **Padding。** 原始實作在訓練時會把 batch 內的 padding 一起平均，推論時（batch
+  size 1）則沒有 padding，因此訓練樣本的條件向量會受到同一個 batch 中其他 prompt 的
+  影響。`film_mask_padding=True` 只平均 prompt 與 EOS；為了與原始實作一致，預設關閉。
+
+要以 FiLM 進行 fine-tune，在 §11 的 `lerobot-train` 指令加上
+`--policy.use_film=true`。Base policy 沒有 FiLM 權重，因此 projection 會從預設初始化
+開始，與原始實作相同。
+
+驗證方式：`tests/test_vision_backbone.py` 從 submodule 載入原始的
+`film_vit_wrapper.py`，用它包裝一個小型 timm ViT，把合併的 projection 複製到它各
+block 的層中，確認兩者產生相同的特徵。`tests/test_model.py` 檢查包含與不包含 padding
+時的語言 embedding 平均；`tests/test_peft.py` 檢查 projection 會被完整訓練，且從 base
+policy 開始訓練時會被初始化。原作者沒有釋出任何 OpenVLA-OFT+ checkpoint（Hugging Face
+Hub 上只有五個 LIBERO 的 OpenVLA-OFT checkpoint），因此端到端的行為尚未與原始實作
+對照。

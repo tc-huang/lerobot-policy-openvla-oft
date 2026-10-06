@@ -32,12 +32,14 @@ LORA_TARGET_MODULES = (
 def build_model(config: OpenVLAOFTConfig) -> OpenVLAOFT:
     """Builds the full-size OpenVLA-OFT network described by `config`."""
     state = config.robot_state_feature
+    llm = BidirectionalLlama(openvla_llama_config())
     return OpenVLAOFT(
-        vision=FusedVisionBackbone(config.image_size),
-        llm=BidirectionalLlama(openvla_llama_config()),
+        vision=FusedVisionBackbone(config.image_size, film_dim=llm.hidden_size if config.use_film else None),
+        llm=llm,
         chunk_size=config.chunk_size,
         action_dim=config.action_feature.shape[0],
         proprio_dim=state.shape[0] if state is not None else None,
+        film_mask_padding=config.film_mask_padding,
     )
 
 
@@ -139,13 +141,18 @@ class OpenVLAOFTPolicy(PreTrainedPolicy):
         """LoRA defaults of the original recipe for `lerobot-train --peft.*`.
 
         LoRA goes on every linear layer of the pretrained VLA, while the modules that
-        OpenVLA-OFT adds are trained in full. LeRobot's CLI always passes `--peft.r`
-        (default 16), so the original rank 32 has to be set there.
+        OpenVLA-OFT adds, including the FiLM projections, are trained in full.
+        LeRobot's CLI always passes `--peft.r` (default 16), so the original rank 32
+        has to be set there.
         """
-        new_modules = ("action_head", "proprio_projector")
+        new_modules = [
+            name for name in ("action_head", "proprio_projector") if getattr(self.model, name) is not None
+        ]
+        if self.model.vision.uses_film:
+            new_modules.append("film")
         return {
             "target_modules": LORA_TARGET_MODULES,
-            "modules_to_save": [name for name in new_modules if getattr(self.model, name) is not None],
+            "modules_to_save": new_modules,
             "lora_alpha": 16,
             "lora_dropout": 0.0,
             "init_lora_weights": "gaussian",

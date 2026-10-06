@@ -23,12 +23,15 @@ IMAGE_KEYS = (f"{OBS_IMAGES}.image", f"{OBS_IMAGES}.wrist_image")
 def build_tiny_model(config, **llama_overrides):
     torch.manual_seed(0)
     state = config.robot_state_feature
+    llm = BidirectionalLlama(openvla_llama_config(**(TINY_LLAMA | llama_overrides)))
+    film_dim = llm.hidden_size if config.use_film else None
     return OpenVLAOFT(
-        vision=FusedVisionBackbone(TINY_IMAGE_SIZE, **TINY_VIT),
-        llm=BidirectionalLlama(openvla_llama_config(**(TINY_LLAMA | llama_overrides))),
+        vision=FusedVisionBackbone(TINY_IMAGE_SIZE, film_dim=film_dim, **TINY_VIT),
+        llm=llm,
         chunk_size=config.chunk_size,
         action_dim=config.action_feature.shape[0],
         proprio_dim=state.shape[0] if state is not None else None,
+        film_mask_padding=config.film_mask_padding,
     )
 
 

@@ -10,6 +10,7 @@ LeRobot's format and evaluates them with `lerobot-eval`, aiming to reproduce
 the LIBERO results reported in the paper. It also supports LoRA fine-tuning
 from `openvla/openvla-7b` with `lerobot-train`, and deploying the fine-tuned
 policy on a single SO-100 or SO-101 follower arm with `lerobot-rollout`.
+FiLM language conditioning from OpenVLA-OFT+ is available as an option (§12).
 
 ## Design
 
@@ -51,6 +52,8 @@ the LIBERO recipe.
 | Mixed precision                | Forward under bfloat16 autocast        | (follows `dtype`)                                 | Repo `vla-scripts/finetune.py:327`; not stated in the paper                                                      |
 | Padded chunk steps in the loss | Included, as copies of the last action | `mask_padded_actions` (False)                     | Repo `prismatic/vla/datasets/rlds/traj_transforms.py:44`, `vla-scripts/finetune.py:390`; not stated in the paper |
 | Compilation                    | Off                                    | `compile_model`, `compile_mode` (`default`)       | This port; follows LeRobot's pi0 and SmolVLA (`compile_model`, `compile_mode`)                                   |
+| FiLM (OpenVLA-OFT+)            | Off                                    | `use_film`                                        | Paper App. D, Table IV; Repo `vla-scripts/finetune.py:83`; see §12                                               |
+| Padding in the FiLM average    | Included                               | `film_mask_padding` (False)                       | Repo `prismatic/extern/hf/modeling_prismatic.py:581`; not stated in the paper; see §12                           |
 
 The original implementation selects the chunk size and normalization scheme at
 import time by inspecting the command line (`prismatic/vla/constants.py`);
@@ -75,7 +78,7 @@ or by the training command:
 | Input image size         | 224 × 224                       | §2 Vision backbone (`image_size`)                                   |
 | LoRA rank                | 32                              | LoRA fine-tuning                                                    |
 | Image augmentations      | 90% random crop, color jitter   | 90% crop: §8.3 (`image_crop_scale`); color jitter: training command |
-| FiLM                     | No                              | Out of scope                                                        |
+| FiLM                     | No                              | §12 FiLM (`use_film`)                                               |
 
 ### 2. Vision backbone
 
@@ -876,7 +879,7 @@ uv run accelerate launch --multi_gpu --num_processes=8 $(uv run which lerobot-tr
 | LoRA dropout            | 0                                                                                                          | Policy default                                  | Repo `vla-scripts/finetune.py:108`; not stated in the paper                   |
 | LoRA initialization     | Gaussian                                                                                                   | Policy default                                  | Repo `vla-scripts/finetune.py:852`; not stated in the paper                   |
 | LoRA targets            | Every linear layer of the vision backbone, vision projector, and language model                            | Policy default (`LORA_TARGET_MODULES`)          | Repo `vla-scripts/finetune.py:851` (`all-linear`)                             |
-| Fully trained modules   | Action head (151M) and proprio projector (17M)                                                             | Policy default (`modules_to_save`)              | Paper Table IV; Repo `vla-scripts/finetune.py:876-896`, `:927-933`            |
+| Fully trained modules   | Action head (151M) and proprio projector (17M); also the FiLM projections (438M) with `use_film` (§12)     | Policy default (`modules_to_save`)              | Paper Table IV; Repo `vla-scripts/finetune.py:876-896`, `:927-933`            |
 | Batch size              | 8 per GPU, 64 in total on 8 GPUs                                                                           | `--batch_size=8` with 8 processes               | Paper Table IV; Repo `vla-scripts/finetune.py:88`                             |
 | Learning rate and decay | 5e-4, ×0.1 after 100K steps                                                                                | Policy presets (§1)                             | Paper Table IV, App. D                                                        |
 | Training steps          | 150K (50K for LIBERO-Goal)                                                                                 | `--steps`                                       | Paper Table IV                                                                |
@@ -963,3 +966,71 @@ adapter, and loading it back in `lerobot-eval`.
 The first attempt failed because LeRobot 0.6.1's `make_policy` passes a
 `dataset_meta` argument to the policy constructor; `OpenVLAOFTPolicy` now
 accepts extra keyword arguments (`06c414e`).
+
+### 12. FiLM (OpenVLA-OFT+)
+
+OpenVLA-OFT+ adds feature-wise linear modulation (FiLM) to the vision backbone
+so that the policy follows the language instruction more closely (Paper §IV-C,
+App. C). The paper uses it for the ALOHA experiments, where the wrist cameras
+make policies latch onto visual cues instead of the instruction, and not for
+LIBERO. It is off by default; `--policy.use_film=true` turns it on.
+
+In every block of both vision transformers, between the attention and MLP
+sublayers, the patch features `x` are modulated as
+
+```text
+x ← (1 + γ) ⊙ x + β,    γ = W_γ c + b_γ,    β = W_β c + b_β
+```
+
+where `c` is the average language embedding of the task prompt and every block
+has its own `W` and `b`. `γ` and `β` have one element per hidden unit, shared by
+all patches of an image and by all camera images of a sample.
+
+| Setting                | Value                                                                     | Config field                       | Source                                                                                                                                                |
+| ---------------------- | ------------------------------------------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Enabled                | No for LIBERO, yes for ALOHA                                              | `use_film` (False)                 | Paper App. D, Table IV, Table V; Repo `vla-scripts/finetune.py:83`, `LIBERO.md:106`, `ALOHA.md:66`                                                    |
+| Modulation             | `(1 + γ) ⊙ x + β`                                                         | (fixed)                            | Paper §IV-C, App. C; Repo `prismatic/models/film_vit_wrapper.py:72`                                                                                   |
+| Position               | After the attention sublayer, before the MLP, in every block              | (fixed)                            | Paper §IV-C, Fig. 8; Repo `prismatic/models/film_vit_wrapper.py:69-75`                                                                                |
+| Transformers           | Both DINOv2 and SigLIP                                                    | (fixed)                            | Paper App. A (OFT change 6), App. C; Repo `prismatic/models/film_vit_wrapper.py:196-198`                                                              |
+| Modulated unit         | Each hidden unit, shared across patches                                   | (fixed)                            | Paper §IV-C, App. C; Repo `prismatic/models/film_vit_wrapper.py:72`                                                                                   |
+| Projections            | One affine map per block for each of `γ` and `β` (`4096 → D_ViT`)         | (fixed)                            | Paper App. C; Repo `prismatic/models/film_vit_wrapper.py:53-54`                                                                                       |
+| Initialization         | PyTorch's default `nn.Linear` initialization                              | (fixed)                            | Repo `prismatic/models/film_vit_wrapper.py:53-54`; the paper only says `γ` and `β` are near zero at initialization (App. C)                           |
+| Language embedding `c` | Mean of the language model's input embeddings of BOS, the prompt, and EOS | (fixed)                            | Paper §IV-C; Repo `prismatic/extern/hf/modeling_prismatic.py:575-586` (training), `:994-1003` (inference), `prismatic/models/film_vit_wrapper.py:242` |
+| Padding in the mean    | Included                                                                  | `film_mask_padding` (False)        | Repo: padding is not an action position, so `prismatic/extern/hf/modeling_prismatic.py:581` keeps it; not stated in the paper                         |
+| Training               | In full, not with LoRA                                                    | Policy default (`modules_to_save`) | Paper Table V; Repo `vla-scripts/finetune.py:854-866` (FiLM added after LoRA), `:642-646` (whole vision backbone saved)                               |
+| Size                   | 438M parameters                                                           | (derived)                          | Paper Table V reports 456M, which includes the projections of the last block of each transformer that this port removes (§2)                          |
+
+On LIBERO, FiLM changes little: one policy trained on all four suites reaches
+97.0% average success with FiLM and 96.8% without (Paper Table XIV).
+
+Differences from the original implementation (this port):
+
+- **Stacked projections.** The original wraps every timm block in a
+  `FiLMedVisionTransformerBlock` with its own `scale` and `shift` layers, which
+  renames every ViT parameter to `blocks.N.block.*`. Here each transformer has
+  one `FiLMGenerator` whose `scale` and `shift` layers produce `γ` and `β` for
+  all blocks at once; rows `N × D_ViT` to `(N + 1) × D_ViT` of each weight are
+  block `N`'s projection. This computes the same function with the same
+  initialization distribution, since the fan-in is unchanged. The ViT parameter
+  names stay the same, so OFT checkpoints and LoRA targets are unaffected, and
+  PEFT trains each generator as a single `modules_to_save` entry.
+- **No projections for the pruned block.** The original also creates
+  projections for the last block, which it runs but never reads (§2).
+- **Padding.** The original averages over the batch's padding at training time
+  but has none at inference (batch size 1), so a training sample's condition
+  depends on the other prompts in its batch. `film_mask_padding=True` averages
+  only the prompt and EOS; it is off to match the original.
+
+To fine-tune with FiLM, add `--policy.use_film=true` to the `lerobot-train`
+command in §11. The base policy has no FiLM weights, so the projections start
+from their default initialization, as in the original.
+
+How this was verified: `tests/test_vision_backbone.py` loads the original
+`film_vit_wrapper.py` from the submodule, wraps a tiny timm ViT with it, copies
+the stacked projections into its per-block layers, and checks that both produce
+the same features. `tests/test_model.py` checks the language embedding average
+with and without padding, and `tests/test_peft.py` checks that the projections
+are trained in full and initialized when training starts from the base policy.
+The authors have released no OpenVLA-OFT+ checkpoint (only the five LIBERO
+OpenVLA-OFT checkpoints are on the Hugging Face Hub), so end-to-end behavior has
+not been checked against the original.
