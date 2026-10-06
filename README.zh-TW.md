@@ -807,4 +807,32 @@ LoRA adapter」。`tests/test_peft.py` 會確認 `LORA_TARGET_MODULES` 選中的
 驗證方式：`tests/test_peft.py` 在小型 policy 上執行 `lerobot-train` 的包裝流程，確
 認只有 LoRA adapter、action head 與 proprio projector 可訓練；使用原始的 alpha、
 dropout 與初始化方式；adapter 存檔後重新載入結果一致；以及 base policy 能精確載入
-VLA 權重，並初始化新增的模組。目前尚未進行實際訓練。
+VLA 權重，並初始化新增的模組。
+
+#### Smoke test
+
+以 200 步的訓練在實際硬體上驗證完整流程：轉換 base、讀取 `lerobot/libero`、在
+`lerobot-train` 中套上 LoRA、儲存 adapter，以及在 `lerobot-eval` 中重新載入。
+
+| 項目                          | 值                                                                                                                                                                                                                                                                                                                |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 指令                          | `sky launch -c openvla-oft-train skypilot/train_lora.yaml --env STEPS=200 --env BATCH_SIZE=2 --env SAVE_FREQ=200 --env LOG_FREQ=10 --env RUN_NAME=smoke`，再執行 `sky exec openvla-oft-train skypilot/libero_eval.yaml --env POLICY_PATH=<checkpoint> --env TASK_IDS="[0]" --env N_EPISODES=2 --env BATCH_SIZE=2` |
+| 程式碼                        | `06c414e`                                                                                                                                                                                                                                                                                                         |
+| 機器                          | RunPod L40（48 GB）、9 vCPU、125 GB RAM、美國機房，目錄價每小時 $0.82                                                                                                                                                                                                                                             |
+| 可訓練參數                    | `lerobot-train` 回報 275,798,023 個（276M）：LoRA 107.9M、action head 151M、proprio projector 17M；論文 Table IV 為 279M，其中包含本專案移除之層上的 LoRA                                                                                                                                                         |
+| Loss（正規化 action 上的 L1） | 第 10 步為 1.72，第 120 步之後約為 0.6                                                                                                                                                                                                                                                                            |
+| 速度與記憶體                  | Batch size 2 時每步 0.63 秒（每秒 3.2 筆樣本），GPU 記憶體 26.4 GB                                                                                                                                                                                                                                                |
+| 存下的 checkpoint             | 801 MB 的 `adapter_model.safetensors`，設定為 `r=32`、`lora_alpha=16`、`lora_dropout=0.0`、`init_lora_weights="gaussian"`、`modules_to_save=["action_head", "proprio_projector"]`，`base_model_name_or_path` 指向轉換後的 base                                                                                    |
+| 評估                          | `lerobot-eval` 載入 adapter 與其 base，跑了 2 個 LIBERO-Spatial episode（訓練 200 步後成功率為 0%，符合預期）                                                                                                                                                                                                     |
+
+| 階段                                          | 時間                                              |
+| --------------------------------------------- | ------------------------------------------------- |
+| 在機器上下載 `openvla/openvla-7b`（15 GB）    | 49 秒                                             |
+| 下載 `lerobot/libero`                         | 約 30 秒                                          |
+| 建立 policy（建立網路、載入 base、套上 LoRA） | 1 分 36 秒                                        |
+| 訓練 200 步                                   | 2 分 21 秒                                        |
+| 評估 2 個 episode（含載入 adapter）           | 2 分 53 秒                                        |
+| 機器總使用時間                                | 約 15 分鐘，包含一次失敗的嘗試；以目錄價計約 $0.2 |
+
+第一次嘗試失敗，原因是 LeRobot 0.6.1 的 `make_policy` 會把 `dataset_meta` 參數傳給
+policy 的建構子；`OpenVLAOFTPolicy` 現在會接受額外的 keyword 參數（`06c414e`）。

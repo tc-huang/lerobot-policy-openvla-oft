@@ -886,4 +886,34 @@ path on a tiny policy and checks that only the LoRA adapters, the action head,
 and the proprio projector are trainable; that the original alpha, dropout, and
 initialization are used; that an adapter survives saving and reloading; and
 that a base policy loads the VLA weights exactly while initializing the new
-modules. A real training run has not been done yet.
+modules.
+
+#### Smoke test
+
+A 200-step run checked the whole path on real hardware: converting the base,
+reading `lerobot/libero`, wrapping with LoRA in `lerobot-train`, saving the
+adapter, and loading it back in `lerobot-eval`.
+
+| Item                            | Value                                                                                                                                                                                                                                                                                                           |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Command                         | `sky launch -c openvla-oft-train skypilot/train_lora.yaml --env STEPS=200 --env BATCH_SIZE=2 --env SAVE_FREQ=200 --env LOG_FREQ=10 --env RUN_NAME=smoke`, then `sky exec openvla-oft-train skypilot/libero_eval.yaml --env POLICY_PATH=<checkpoint> --env TASK_IDS="[0]" --env N_EPISODES=2 --env BATCH_SIZE=2` |
+| Code                            | `06c414e`                                                                                                                                                                                                                                                                                                       |
+| Machine                         | RunPod L40 (48 GB), 9 vCPUs, 125 GB RAM, US, $0.82/hour list price                                                                                                                                                                                                                                              |
+| Trainable parameters            | 275,798,023 (276M) as reported by `lerobot-train`: LoRA 107.9M, action head 151M, proprio projector 17M; Paper Table IV reports 279M including the LoRA on layers this port removed                                                                                                                             |
+| Loss (L1 on normalized actions) | 1.72 at step 10, about 0.6 from step 120 on                                                                                                                                                                                                                                                                     |
+| Speed and memory                | 0.63 seconds per step at batch size 2 (3.2 samples per second), 26.4 GB GPU memory                                                                                                                                                                                                                              |
+| Saved checkpoint                | 801 MB `adapter_model.safetensors` with `r=32`, `lora_alpha=16`, `lora_dropout=0.0`, `init_lora_weights="gaussian"`, `modules_to_save=["action_head", "proprio_projector"]`, and `base_model_name_or_path` pointing to the converted base                                                                       |
+| Evaluation                      | `lerobot-eval` loaded the adapter and its base and ran 2 LIBERO-Spatial episodes (0% success after 200 steps, as expected)                                                                                                                                                                                      |
+
+| Stage                                                                            | Time                                                                        |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Downloading `openvla/openvla-7b` (15 GB) on the machine                          | 49 seconds                                                                  |
+| Downloading `lerobot/libero`                                                     | About 30 seconds                                                            |
+| Creating the policy (building the network, loading the base, wrapping with LoRA) | 1 minute 36 seconds                                                         |
+| 200 training steps                                                               | 2 minutes 21 seconds                                                        |
+| Evaluating 2 episodes, including loading the adapter                             | 2 minutes 53 seconds                                                        |
+| Total machine time                                                               | About 15 minutes including one failed attempt; about $0.2 at the list price |
+
+The first attempt failed because LeRobot 0.6.1's `make_policy` passes a
+`dataset_meta` argument to the policy constructor; `OpenVLAOFTPolicy` now
+accepts extra keyword arguments (`06c414e`).
