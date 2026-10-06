@@ -36,7 +36,6 @@ follower 手臂上。
 | 每個 chunk 執行的 action 數    | 8（整個 chunk，open-loop）          | `n_action_steps`                                  | 論文 §V-A、Table IV；原 repo `experiments/robot/libero/run_libero_eval.py:100`                         |
 | 觀測歷史                       | 無（只用當下這一步）                | `n_obs_steps`、`observation_delta_indices`        | 論文 Table IV                                                                                          |
 | State 與 action 正規化         | `[q01, q99]` → `[-1, 1]`            | `normalization_mapping`（`QUANTILES`）            | 原 repo `prismatic/vla/constants.py:30`；論文只提到 action 正規化到 `[-1, 1]`（App. D）                |
-| 不正規化的 action 維度         | 無（每個維度都正規化）              | `action_norm_mask`                                | 原 repo `prismatic/vla/datasets/rlds/oxe/materialize.py:35-45`；見 §8.2                                |
 | 影像正規化                     | 無                                  | `normalization_mapping`（`IDENTITY`）             | 本專案：每個 vision backbone 會自行正規化                                                              |
 | Optimizer                      | AdamW                               | `get_optimizer_preset()`                          | 原 repo `vla-scripts/finetune.py:935`；論文未提及                                                      |
 | Learning rate                  | 5e-4                                | `optimizer_lr`                                    | 論文 Table IV；原 repo `vla-scripts/finetune.py:89`                                                    |
@@ -358,43 +357,63 @@ OpenVLA-OFT 以原始實作稱為 `BOUNDS_Q99` 的方式正規化機器人狀態
 反正規化：  x = (x̂ + 1) / 2 · (q99 − q01) + q01
 ```
 
-Action 的維度也可以被 mask：被 mask 的維度在正規化與反正規化時都原樣通過。原始實
-作會把 end-effector dataset 的 gripper 設為 mask，因為 gripper action 本身已經是
-絕對的開合指令，而不是位移量。在釋出的 LIBERO checkpoint 中，gripper action 的值
-域是 `0`（閉合）到 `1`（張開），這是原始 data loader 的慣例
-（`experiments/robot/robot_utils.py:180-185`），網路也是以這個原始尺度學習輸出。
+Pipeline 以 LeRobot 本身的 step 再加上一個小 step 組成：
 
-LeRobot 內建的 `QUANTILES` 只實作了公式的第一部分。
-`OpenVLANormalizerProcessorStep` 與 `OpenVLAUnnormalizerProcessorStep` 繼承
-LeRobot 的 normalizer 與 unnormalizer，沿用它們管理統計值與存檔的方式，再加上截斷
-與 mask。
+```text
+preprocessor：  … → normalizer_processor（QUANTILES） → openvla_oft_clip
+postprocessor： unnormalizer_processor（QUANTILES） → …
+```
 
-| 設定                      | 值                                                                           | Config 欄位                            | 來源                                                                                                                                                         |
-| ------------------------- | ---------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 值域映射                  | State 與 action 皆為 `[q01, q99]` → `[-1, 1]`                                | `normalization_mapping`（`QUANTILES`） | 原 repo `prismatic/vla/constants.py:30`、`prismatic/vla/datasets/rlds/utils/data_utils.py:72-83`                                                             |
-| 截斷                      | 正規化後的值截斷到 `[-1, 1]`：訓練時的 action 目標，以及訓練與推論時的 state | （固定）                               | 原 repo：訓練 `prismatic/vla/datasets/rlds/utils/data_utils.py:81`，推論時的 state `experiments/robot/openvla_utils.py:669-676`                              |
-| 反正規化                  | 反向映射，不截斷                                                             | （固定）                               | 原 repo `prismatic/extern/hf/modeling_prismatic.py:785-789`                                                                                                  |
-| 被 mask 的 action 維度    | 原樣通過；state 一律不 mask                                                  | `action_norm_mask`                     | 原 repo：end-effector action 的 mask `prismatic/vla/datasets/rlds/oxe/materialize.py:35-39`，套用於 `data_utils.py:79-83` 與 `modeling_prismatic.py:785-789` |
-| 預設 mask                 | 無：每個 action 維度都正規化                                                 | `action_norm_mask`                     | 本專案；與原始實作對關節位置 action 的處理一致（`materialize.py:43-45`），適用於 SO-100/SO-101 手臂                                                          |
-| LIBERO checkpoint 的 mask | `[True] * 6 + [False]`（gripper 不正規化）                                   | `action_norm_mask`                     | 原 repo：`materialize.py:37-39`；記錄在每個 checkpoint 的 `dataset_statistics.json` 的 `mask` 中                                                             |
+LeRobot 的 `QUANTILES` 就是公式的第一部分，`OpenVLAClipProcessorStep` 再加上截
+斷。保留 LeRobot 的 normalizer 與 unnormalizer 而不另外取代，對 fine-tune 很重
+要：`lerobot-train` 會依名稱找出 `normalizer_processor` 與
+`unnormalizer_processor`，把 dataset 統計值注入預訓練 policy 的 processor
+（`lerobot/scripts/lerobot_train.py:357-377`）。名稱不同的 step 會在不報錯的情況
+下沿用預訓練 policy 的統計值。
+
+**不正規化的維度。** 原始實作也可以讓某些 action 維度不做正規化：它會把
+end-effector dataset 的 gripper 設為 mask，因為 gripper action 本身已經是絕對的開
+合指令，而不是位移量。在釋出的 LIBERO checkpoint 中，gripper action 的值域是
+`0`（閉合）到 `1`（張開），這是原始 data loader 的慣例
+（`experiments/robot/robot_utils.py:180-185`），網路也是以這個原始尺度學習輸出。本
+專案不另外實作 mask 機制，而是透過統計值表達：`q01 = -1`、`q99 = 1` 時，
+`QUANTILES` 會把 `x` 映射成 `2 · (x + 1) / 2 − 1 = x`，也就是恆等映射。Checkpoint
+轉換（§9）會對 `dataset_statistics.json` 中 `mask` 為 False 的每個維度寫入這組百分
+位數。
+
+| 設定                             | 值                                                                                          | Config 欄位                            | 來源                                                                                                                                                         |
+| -------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 值域映射                         | State 與 action 皆為 `[q01, q99]` → `[-1, 1]`                                               | `normalization_mapping`（`QUANTILES`） | 原 repo `prismatic/vla/constants.py:30`、`prismatic/vla/datasets/rlds/utils/data_utils.py:72-83`                                                             |
+| 截斷                             | 正規化後的 state 與 action 截斷到 `[-1, 1]`：訓練時的 action 目標，以及訓練與推論時的 state | （固定）                               | 原 repo：訓練 `prismatic/vla/datasets/rlds/utils/data_utils.py:81`，推論時的 state `experiments/robot/openvla_utils.py:669-676`                              |
+| 反正規化                         | 反向映射，不截斷                                                                            | （固定）                               | 原 repo `prismatic/extern/hf/modeling_prismatic.py:785-789`                                                                                                  |
+| 被 mask 的 action 維度           | 恆等映射，透過 `q01 = -1`、`q99 = 1`                                                        | （統計值）                             | 原 repo：end-effector action 的 mask `prismatic/vla/datasets/rlds/oxe/materialize.py:35-39`，套用於 `data_utils.py:79-83` 與 `modeling_prismatic.py:785-789` |
+| 新訓練時被 mask 的維度           | 無：每個維度都使用 dataset 統計值                                                           | （統計值）                             | 本專案；與原始實作對關節位置 action 的處理一致（`materialize.py:43-45`），適用於 SO-100/SO-101 手臂                                                          |
+| LIBERO checkpoint 被 mask 的維度 | Gripper                                                                                     | （統計值）                             | 原 repo：`materialize.py:37-39`；記錄在每個 checkpoint 的 `dataset_statistics.json` 的 `mask` 中                                                             |
 
 為什麼 mask 對 LIBERO checkpoint 很重要：它們的 gripper 統計值是 `q01 = 0`、
-`q99 = 1`。若對 gripper 做正規化，會把它映射到 `[-1, 1]`，但網路學到的是在原始的
-`[0, 1]` 尺度上輸出，因此反正規化後每個 gripper 指令都會被錯誤解讀。所以轉換
-checkpoint 時，會依 `dataset_statistics.json` 設定 `action_norm_mask`。
+`q99 = 1`。若以這組統計值對 gripper 做正規化，會把它映射到 `[-1, 1]`，但網路學到的
+是在原始的 `[0, 1]` 尺度上輸出，因此反正規化後每個 gripper 指令都會被錯誤解讀。
 
 與原始實作的差異（本專案）：
 
+- **被 mask 的維度也會截斷。** 原始實作讓被 mask 的維度原樣通過、不截斷；本專案
+  在恆等映射之後，與其他維度一樣截斷。這只會影響 `[-1, 1]` 以外的值，而 LIBERO
+  的 gripper action 只有 0 或 1。
 - **Epsilon。** 原始實作一律在 `q99 − q01` 上加 `1e-8`；LeRobot 只在兩者相等時才
   以 `1e-8` 代替。相對差異約為 `1e-8`，實際上沒有影響。
-- **每個 policy 一個 mask。** 原始實作把 mask 存在 dataset 統計值中；本專案則把它
-  定義為 configuration 欄位，因此會隨 policy 與 processor 一起存檔，不依賴統計值的
-  格式。
 
-驗證方式：`tests/test_processor.py` 把 preprocessor 與 postprocessor 的結果，與直
-接照抄原始公式（`data_utils.py:72-83`、`modeling_prismatic.py:785-789`）的計算結果
-比對，涵蓋超出 `[q01, q99]` 的值與被 mask 的維度，並確認 mask 在 pipeline 存檔後
-重新載入仍然保留。
+驗證方式：
+
+- `tests/test_processor.py` 把 preprocessor 與 postprocessor 的結果，與直接照抄原
+  始公式（`data_utils.py:72-83`、`modeling_prismatic.py:785-789`）的計算比對，涵
+  蓋超出 `[q01, q99]` 的值，並確認存檔的 pipeline 使用 LeRobot 的
+  `normalizer_processor` 與 `unnormalizer_processor`。
+- `tests/test_convert_checkpoint.py` 確認被 mask 的 gripper 值在兩個方向都原樣通
+  過。
+- 與本節先前的實作（自訂 normalizer 加上明確的 mask）相比，以 libero-spatial 的統
+  計值、64 組隨機輸入（包含超出範圍的值）測試，正規化後的 state 與反正規化後的
+  action 完全相同；正規化後的 action 目標只在 gripper 原始值大於 1 時不同，也就是
+  上述的截斷差異。
 
 #### 8.3 影像
 
@@ -475,13 +494,13 @@ pipeline。
 
 每個釋出檔案的轉換方式：
 
-| 釋出檔案                                | 內容                                                            | 轉換方式                                                                                     |
-| --------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `model-0000{1..4}-of-00004.safetensors` | Vision backbone、vision projector 與 Llama-2，LoRA 權重已經合併 | 依下表重新命名 key；捨棄不會用到的權重                                                       |
-| `action_head--*.pt`                     | L1 regression action head（§6）                                 | 依下表重新命名 key                                                                           |
-| `proprio_projector--*.pt`               | Proprio projector（§3）                                         | 移除 `module.` 前綴                                                                          |
-| `dataset_statistics.json`               | `q01`、`q99` 與 action 的 `mask`                                | 轉成 `observation.state` 與 `action` 的 LeRobot 統計值；mask 轉成 `action_norm_mask`（§8.2） |
-| `lora_adapter/`                         | 未合併的 LoRA 權重                                              | 不需要，因為模型權重已經包含它們                                                             |
+| 釋出檔案                                | 內容                                                            | 轉換方式                                                                                                         |
+| --------------------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `model-0000{1..4}-of-00004.safetensors` | Vision backbone、vision projector 與 Llama-2，LoRA 權重已經合併 | 依下表重新命名 key；捨棄不會用到的權重                                                                           |
+| `action_head--*.pt`                     | L1 regression action head（§6）                                 | 依下表重新命名 key                                                                                               |
+| `proprio_projector--*.pt`               | Proprio projector（§3）                                         | 移除 `module.` 前綴                                                                                              |
+| `dataset_statistics.json`               | `q01`、`q99` 與 action 的 `mask`                                | 轉成 `observation.state` 與 `action` 的 LeRobot 統計值；被 mask 的 action 維度設為 `q01 = -1`、`q99 = 1`（§8.2） |
+| `lora_adapter/`                         | 未合併的 LoRA 權重                                              | 不需要，因為模型權重已經包含它們                                                                                 |
 
 Key 對應：
 

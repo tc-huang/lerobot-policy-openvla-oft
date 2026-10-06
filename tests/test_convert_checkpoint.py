@@ -13,6 +13,7 @@ from lerobot_policy_openvla_oft.convert_checkpoint import (
     load_released_weights,
 )
 from lerobot_policy_openvla_oft.model import OpenVLAOFT
+from lerobot_policy_openvla_oft.processor_openvla_oft import make_openvla_oft_pre_post_processors
 
 RELEASED_ACTION_HEAD_LAYERS = {
     "input_norm": "layer_norm1",
@@ -114,27 +115,48 @@ def test_rejects_missing_weights(make_model):
 
 def test_dataset_statistics_become_lerobot_stats(tmp_path):
     path = tmp_path / "dataset_statistics.json"
-    action = {"q01": [0.0, 0.0], "q99": [1.0, 1.0], "mask": [True, False]}
+    action = {"q01": [-0.5, 0.0], "q99": [0.5, 1.0], "mask": [True, False]}
     path.write_text(
         json.dumps({"libero_spatial_no_noops": {"action": action, "proprio": {"q01": [0.0], "q99": [2.0]}}})
     )
 
-    stats, mask = convert_dataset_statistics(path)
-    config = libero_config(stats, mask)
+    stats = convert_dataset_statistics(path)
+    config = libero_config(stats)
 
-    assert mask == [True, False]
-    assert set(stats[ACTION]) == {"q01", "q99"}
+    torch.testing.assert_close(stats[ACTION]["q01"], torch.tensor([-0.5, -1.0]))
+    torch.testing.assert_close(stats[ACTION]["q99"], torch.tensor([0.5, 1.0]))
     torch.testing.assert_close(stats[OBS_STATE]["q99"], torch.tensor([2.0]))
     assert config.robot_state_feature.shape == (1,)
     assert config.action_feature.shape == (2,)
     assert list(config.image_features) == ["observation.images.image", "observation.images.image2"]
 
 
+def test_masked_action_dims_pass_through_unchanged(tmp_path):
+    path = tmp_path / "dataset_statistics.json"
+    action = {"q01": [-0.5] * 7, "q99": [0.5] * 7, "mask": [True] * 6 + [False]}
+    path.write_text(
+        json.dumps({"suite": {"action": action, "proprio": {"q01": [0.0] * 8, "q99": [1.0] * 8}}})
+    )
+    stats = convert_dataset_statistics(path)
+    config = libero_config(stats)
+    config.device = "cpu"
+    preprocessor, postprocessor = make_openvla_oft_pre_post_processors(config, stats)
+    observation = {key: torch.rand(3, 224, 224) for key in config.image_features}
+    gripper = torch.tensor([0.0, 0.3, 1.0])
+
+    actions = torch.zeros(3, 7)
+    actions[:, -1] = gripper
+    normalized = preprocessor(observation | {OBS_STATE: torch.zeros(8), ACTION: actions, "task": "x"})[ACTION]
+
+    torch.testing.assert_close(normalized[:, -1], gripper)
+    torch.testing.assert_close(postprocessor(normalized)[:, -1], gripper)
+
+
 def test_libero_postprocessor_converts_gripper_last():
     stats = {
         key: {"q01": torch.zeros(dim), "q99": torch.ones(dim)} for key, dim in ((ACTION, 7), (OBS_STATE, 8))
     }
-    config = libero_config(stats, [True] * 6 + [False])
+    config = libero_config(stats)
 
     _, postprocessor = libero_processors(config, stats)
 

@@ -74,17 +74,6 @@ def test_rejects_unsupported_dtype():
         OpenVLAOFTConfig(dtype="float16")
 
 
-def test_rejects_action_norm_mask_of_wrong_length():
-    config = OpenVLAOFTConfig(
-        input_features={f"{OBS_IMAGES}.image": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 224, 224))},
-        output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(7,))},
-        action_norm_mask=[True] * 6,
-    )
-
-    with pytest.raises(ValueError, match="action_norm_mask"):
-        config.validate_features()
-
-
 @pytest.mark.parametrize("scale", [0.0, 1.5])
 def test_rejects_image_crop_scale_outside_unit_interval(scale):
     with pytest.raises(ValueError, match="image_crop_scale"):

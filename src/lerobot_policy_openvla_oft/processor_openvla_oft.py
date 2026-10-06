@@ -3,22 +3,22 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F  # noqa: N812
-from lerobot.configs import FeatureType, NormalizationMode, PipelineFeatureType, PolicyFeature
+from lerobot.configs import PipelineFeatureType, PolicyFeature
 from lerobot.processor import (
     ActionProcessorStep,
     ComplementaryDataProcessorStep,
-    NormalizerProcessorStep,
+    EnvTransition,
     ObservationProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
+    ProcessorStep,
     ProcessorStepRegistry,
     TokenizerProcessorStep,
-    UnnormalizerProcessorStep,
+    TransitionKey,
     make_default_policy_processor_steps,
     make_policy_processor_pipelines,
 )
-from lerobot.processor.normalize_processor import _NormalizationMixin
-from lerobot.utils.constants import OBS_IMAGES
+from lerobot.utils.constants import OBS_IMAGES, OBS_STATE
 from torch import Tensor
 from transformers import LlamaTokenizerFast
 
@@ -98,44 +98,32 @@ def _is_image(key: str) -> bool:
     return key.startswith(f"{OBS_IMAGES}.")
 
 
+@ProcessorStepRegistry.register(name="openvla_oft_clip")
 @dataclass
-class _BoundsQ99Mixin(_NormalizationMixin):
-    """Turns LeRobot's `QUANTILES` mode into the original `BOUNDS_Q99` scheme.
+class OpenVLAClipProcessorStep(ProcessorStep):
+    """Clips the normalized state and action to [-1, 1].
 
-    On top of mapping [q01, q99] to [-1, 1], normalized values are clipped to
-    [-1, 1], and action dimensions whose `action_norm_mask` entry is False are
-    passed through unchanged in both directions.
+    Placed after LeRobot's `QUANTILES` normalizer, this completes the original
+    `BOUNDS_Q99` scheme, which clips after mapping [q01, q99] to [-1, 1].
     """
 
-    action_norm_mask: list[bool] | None = None
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        transition = transition.copy()
+        observation = transition.get(TransitionKey.OBSERVATION)
+        if observation is not None and OBS_STATE in observation:
+            transition[TransitionKey.OBSERVATION] = {
+                **observation,
+                OBS_STATE: observation[OBS_STATE].clamp(-1, 1),
+            }
+        action = transition.get(TransitionKey.ACTION)
+        if action is not None:
+            transition[TransitionKey.ACTION] = action.clamp(-1, 1)
+        return transition
 
-    def _apply_transform(
-        self, tensor: Tensor, key: str, feature_type: FeatureType, *, inverse: bool = False
-    ) -> Tensor:
-        result = super()._apply_transform(tensor, key, feature_type, inverse=inverse)
-        if self.norm_map.get(feature_type) != NormalizationMode.QUANTILES:
-            return result
-        if not inverse:
-            result = result.clamp(-1.0, 1.0)
-        if feature_type == FeatureType.ACTION and self.action_norm_mask is not None:
-            mask = torch.tensor(self.action_norm_mask, device=tensor.device)
-            result = torch.where(mask, result, tensor)
-        return result
-
-    def get_config(self) -> dict[str, Any]:
-        return {**super().get_config(), "action_norm_mask": self.action_norm_mask}
-
-
-@ProcessorStepRegistry.register(name="openvla_oft_normalizer")
-@dataclass
-class OpenVLANormalizerProcessorStep(_BoundsQ99Mixin, NormalizerProcessorStep):
-    """Normalizes state and action with the original `BOUNDS_Q99` scheme."""
-
-
-@ProcessorStepRegistry.register(name="openvla_oft_unnormalizer")
-@dataclass
-class OpenVLAUnnormalizerProcessorStep(_BoundsQ99Mixin, UnnormalizerProcessorStep):
-    """Unnormalizes actions with the original `BOUNDS_Q99` scheme."""
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
 
 
 @ProcessorStepRegistry.register(name="openvla_oft_libero_gripper")
@@ -168,8 +156,10 @@ def make_openvla_oft_pre_post_processors(
     """Builds the OpenVLA-OFT preprocessor and postprocessor.
 
     The preprocessor resizes the camera images, formats and tokenizes the prompt,
-    moves data to the policy device, and normalizes state and action. The
-    postprocessor unnormalizes actions and moves them back to the CPU.
+    moves data to the policy device, and normalizes and clips state and action. The
+    postprocessor unnormalizes actions and moves them back to the CPU. The
+    normalizer and unnormalizer are LeRobot's own steps, so `lerobot-train` can
+    inject dataset statistics when fine-tuning from a pretrained policy.
     """
     steps = make_default_policy_processor_steps(config, dataset_stats)
     input_steps = [
@@ -181,20 +171,8 @@ def make_openvla_oft_pre_post_processors(
             tokenizer_name=config.tokenizer_name, padding="longest", padding_side="right"
         ),
         steps.to_device,
-        OpenVLANormalizerProcessorStep(
-            features={**config.input_features, **config.output_features},
-            norm_map=config.normalization_mapping,
-            stats=dataset_stats,
-            action_norm_mask=config.action_norm_mask,
-        ),
+        steps.normalize,
+        OpenVLAClipProcessorStep(),
     ]
-    output_steps = [
-        OpenVLAUnnormalizerProcessorStep(
-            features=config.output_features,
-            norm_map=config.normalization_mapping,
-            stats=dataset_stats,
-            action_norm_mask=config.action_norm_mask,
-        ),
-        steps.to_cpu,
-    ]
+    output_steps = [steps.unnormalize, steps.to_cpu]
     return make_policy_processor_pipelines(input_steps=input_steps, output_steps=output_steps)

@@ -34,8 +34,6 @@ class OpenVLAOFTConfig(PreTrainedConfig):
             querying the policy again.
         normalization_mapping: Normalization mode per feature type. State and action
             are mapped from their [q01, q99] range to [-1, 1] and clipped.
-        action_norm_mask: Per action dimension, whether it is normalized. Masked
-            dimensions are passed through unchanged. None normalizes every dimension.
         image_size: Square input resolution of the vision backbone.
         image_crop_scale: Area fraction of the square crop taken from each image and
             resized back to `image_size`: at random during training, centered at
@@ -63,8 +61,6 @@ class OpenVLAOFTConfig(PreTrainedConfig):
             "ACTION": NormalizationMode.QUANTILES,
         }
     )
-
-    action_norm_mask: list[bool] | None = None
 
     image_size: int = 224
     image_crop_scale: float = 0.9
@@ -98,11 +94,6 @@ class OpenVLAOFTConfig(PreTrainedConfig):
             raise ValueError("OpenVLA-OFT requires at least one image feature.")
         if self.action_feature is None:
             raise ValueError("OpenVLA-OFT requires an action output feature.")
-        action_dim = self.action_feature.shape[0]
-        if self.action_norm_mask is not None and len(self.action_norm_mask) != action_dim:
-            raise ValueError(
-                f"`action_norm_mask` has {len(self.action_norm_mask)} entries for {action_dim} action dims."
-            )
 
     def get_optimizer_preset(self) -> AdamWConfig:
         return AdamWConfig(

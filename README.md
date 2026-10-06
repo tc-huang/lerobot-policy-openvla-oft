@@ -33,24 +33,23 @@ Sources are cited as follows:
 input/output contract, normalization, and training presets. Defaults follow
 the LIBERO recipe.
 
-| Setting                             | Default                                | Config field                                      | Source                                                                                                           |
-| ----------------------------------- | -------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Action chunk size                   | 8                                      | `chunk_size`                                      | Paper §V-A, Table IV; Repo `prismatic/vla/constants.py:27`                                                       |
-| Actions executed per chunk          | 8 (whole chunk, open-loop)             | `n_action_steps`                                  | Paper §V-A, Table IV; Repo `experiments/robot/libero/run_libero_eval.py:100`                                     |
-| Observation history                 | None (single step)                     | `n_obs_steps`, `observation_delta_indices`        | Paper Table IV                                                                                                   |
-| State and action normalization      | `[q01, q99]` → `[-1, 1]`               | `normalization_mapping` (`QUANTILES`)             | Repo `prismatic/vla/constants.py:30`; the paper only states that actions are normalized to `[-1, 1]` (App. D)    |
-| Action dimensions left unnormalized | None (every dimension is normalized)   | `action_norm_mask`                                | Repo `prismatic/vla/datasets/rlds/oxe/materialize.py:35-45`; see §8.2                                            |
-| Image normalization                 | None                                   | `normalization_mapping` (`IDENTITY`)              | This port: each vision backbone applies its own normalization                                                    |
-| Optimizer                           | AdamW                                  | `get_optimizer_preset()`                          | Repo `vla-scripts/finetune.py:935`; not stated in the paper                                                      |
-| Learning rate                       | 5e-4                                   | `optimizer_lr`                                    | Paper Table IV; Repo `vla-scripts/finetune.py:89`                                                                |
-| Weight decay                        | 0.01                                   | `optimizer_weight_decay`                          | Repo: PyTorch AdamW default, since `vla-scripts/finetune.py:935` does not set it; not stated in the paper        |
-| Gradient clipping                   | None                                   | `optimizer_grad_clip_norm` (0)                    | Repo: `vla-scripts/finetune.py` never clips; not stated in the paper                                             |
-| Learning rate decay                 | ×0.1 after 100K steps                  | `scheduler_decay_steps`, `scheduler_decay_factor` | Paper App. D, Table IV; Repo `vla-scripts/finetune.py:91`, `:941-944`                                            |
-| Learning rate warmup                | None                                   | (not supported)                                   | Repo `vla-scripts/finetune.py:90`; not stated in the paper                                                       |
-| Weight dtype                        | bfloat16                               | `dtype`                                           | Repo `vla-scripts/finetune.py:837` (model), `:895` (action head); not stated in the paper                        |
-| Proprio projector weights           | float32                                | `proprio_projector_fp32`                          | Repo `vla-scripts/finetune.py:878-884` (no `to_bf16`); not stated in the paper                                   |
-| Mixed precision                     | Forward under bfloat16 autocast        | (follows `dtype`)                                 | Repo `vla-scripts/finetune.py:327`; not stated in the paper                                                      |
-| Padded chunk steps in the loss      | Included, as copies of the last action | `mask_padded_actions` (False)                     | Repo `prismatic/vla/datasets/rlds/traj_transforms.py:44`, `vla-scripts/finetune.py:390`; not stated in the paper |
+| Setting                        | Default                                | Config field                                      | Source                                                                                                           |
+| ------------------------------ | -------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Action chunk size              | 8                                      | `chunk_size`                                      | Paper §V-A, Table IV; Repo `prismatic/vla/constants.py:27`                                                       |
+| Actions executed per chunk     | 8 (whole chunk, open-loop)             | `n_action_steps`                                  | Paper §V-A, Table IV; Repo `experiments/robot/libero/run_libero_eval.py:100`                                     |
+| Observation history            | None (single step)                     | `n_obs_steps`, `observation_delta_indices`        | Paper Table IV                                                                                                   |
+| State and action normalization | `[q01, q99]` → `[-1, 1]`               | `normalization_mapping` (`QUANTILES`)             | Repo `prismatic/vla/constants.py:30`; the paper only states that actions are normalized to `[-1, 1]` (App. D)    |
+| Image normalization            | None                                   | `normalization_mapping` (`IDENTITY`)              | This port: each vision backbone applies its own normalization                                                    |
+| Optimizer                      | AdamW                                  | `get_optimizer_preset()`                          | Repo `vla-scripts/finetune.py:935`; not stated in the paper                                                      |
+| Learning rate                  | 5e-4                                   | `optimizer_lr`                                    | Paper Table IV; Repo `vla-scripts/finetune.py:89`                                                                |
+| Weight decay                   | 0.01                                   | `optimizer_weight_decay`                          | Repo: PyTorch AdamW default, since `vla-scripts/finetune.py:935` does not set it; not stated in the paper        |
+| Gradient clipping              | None                                   | `optimizer_grad_clip_norm` (0)                    | Repo: `vla-scripts/finetune.py` never clips; not stated in the paper                                             |
+| Learning rate decay            | ×0.1 after 100K steps                  | `scheduler_decay_steps`, `scheduler_decay_factor` | Paper App. D, Table IV; Repo `vla-scripts/finetune.py:91`, `:941-944`                                            |
+| Learning rate warmup           | None                                   | (not supported)                                   | Repo `vla-scripts/finetune.py:90`; not stated in the paper                                                       |
+| Weight dtype                   | bfloat16                               | `dtype`                                           | Repo `vla-scripts/finetune.py:837` (model), `:895` (action head); not stated in the paper                        |
+| Proprio projector weights      | float32                                | `proprio_projector_fp32`                          | Repo `vla-scripts/finetune.py:878-884` (no `to_bf16`); not stated in the paper                                   |
+| Mixed precision                | Forward under bfloat16 autocast        | (follows `dtype`)                                 | Repo `vla-scripts/finetune.py:327`; not stated in the paper                                                      |
+| Padded chunk steps in the loss | Included, as copies of the last action | `mask_padded_actions` (False)                     | Repo `prismatic/vla/datasets/rlds/traj_transforms.py:44`, `vla-scripts/finetune.py:390`; not stated in the paper |
 
 The original implementation selects the chunk size and normalization scheme at
 import time by inspecting the command line (`prismatic/vla/constants.py`);
@@ -403,48 +402,71 @@ normalize:    x̂ = clip(2 · (x − q01) / (q99 − q01) − 1, −1, 1)
 unnormalize:  x = (x̂ + 1) / 2 · (q99 − q01) + q01
 ```
 
-Action dimensions can also be masked out: a masked dimension is passed through
-unchanged by both directions. The original masks the gripper of end-effector
-datasets, because its gripper action is already an absolute open/close command
-rather than a delta. In the released LIBERO checkpoints the gripper action is
-`0` (closed) to `1` (open), the convention of the original data loader
+The pipeline builds this from LeRobot's own steps plus one small step:
+
+```text
+preprocessor:  … → normalizer_processor (QUANTILES) → openvla_oft_clip
+postprocessor: unnormalizer_processor (QUANTILES) → …
+```
+
+LeRobot's `QUANTILES` mode is the first part of the formula, and
+`OpenVLAClipProcessorStep` adds the clipping. Keeping LeRobot's normalizer and
+unnormalizer, rather than replacing them, matters for fine-tuning:
+`lerobot-train` injects the dataset statistics into a pretrained policy's
+processors by looking up steps named `normalizer_processor` and
+`unnormalizer_processor` (`lerobot/scripts/lerobot_train.py:357-377`). A step
+under any other name would silently keep the pretrained policy's statistics.
+
+**Unnormalized dimensions.** The original can also leave action dimensions
+unnormalized: it masks the gripper of end-effector datasets, because the
+gripper action is already an absolute open/close command rather than a delta.
+In the released LIBERO checkpoints the gripper action is `0` (closed) to `1`
+(open), the convention of the original data loader
 (`experiments/robot/robot_utils.py:180-185`), and the network was trained to
-output it on that raw scale.
+output it on that raw scale. This port expresses the mask through the
+statistics instead of a separate mechanism: `QUANTILES` with `q01 = -1` and
+`q99 = 1` maps `x` to `2 · (x + 1) / 2 − 1 = x`, the identity. The checkpoint
+conversion (§9) writes these quantiles for every dimension whose `mask` is
+False in `dataset_statistics.json`.
 
-LeRobot's built-in `QUANTILES` mode only implements the first part of the
-formula. `OpenVLANormalizerProcessorStep` and `OpenVLAUnnormalizerProcessorStep`
-subclass LeRobot's normalizer and unnormalizer, keep their statistics
-handling and serialization, and add the clipping and the mask.
-
-| Setting                         | Value                                                                                                       | Config field                          | Source                                                                                                                                                           |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Range mapping                   | `[q01, q99]` → `[-1, 1]` for state and actions                                                              | `normalization_mapping` (`QUANTILES`) | Repo `prismatic/vla/constants.py:30`, `prismatic/vla/datasets/rlds/utils/data_utils.py:72-83`                                                                    |
-| Clipping                        | Normalized values clipped to `[-1, 1]`: action targets during training, state during training and inference | (fixed)                               | Repo: training `prismatic/vla/datasets/rlds/utils/data_utils.py:81`, inference state `experiments/robot/openvla_utils.py:669-676`                                |
-| Unnormalization                 | Inverse mapping without clipping                                                                            | (fixed)                               | Repo `prismatic/extern/hf/modeling_prismatic.py:785-789`                                                                                                         |
-| Masked action dimensions        | Passed through unchanged; state is never masked                                                             | `action_norm_mask`                    | Repo: mask for end-effector actions `prismatic/vla/datasets/rlds/oxe/materialize.py:35-39`, applied in `data_utils.py:79-83` and `modeling_prismatic.py:785-789` |
-| Default mask                    | None: every action dimension is normalized                                                                  | `action_norm_mask`                    | This port; matches the original for joint-position actions (`materialize.py:43-45`), which suits the SO-100/SO-101 arm                                           |
-| Mask for the LIBERO checkpoints | `[True] * 6 + [False]` (gripper not normalized)                                                             | `action_norm_mask`                    | Repo: `materialize.py:37-39`; recorded as `mask` in each checkpoint's `dataset_statistics.json`                                                                  |
+| Setting                                     | Value                                                                                                                 | Config field                          | Source                                                                                                                                                           |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Range mapping                               | `[q01, q99]` → `[-1, 1]` for state and actions                                                                        | `normalization_mapping` (`QUANTILES`) | Repo `prismatic/vla/constants.py:30`, `prismatic/vla/datasets/rlds/utils/data_utils.py:72-83`                                                                    |
+| Clipping                                    | Normalized state and action clipped to `[-1, 1]`: action targets during training, state during training and inference | (fixed)                               | Repo: training `prismatic/vla/datasets/rlds/utils/data_utils.py:81`, inference state `experiments/robot/openvla_utils.py:669-676`                                |
+| Unnormalization                             | Inverse mapping without clipping                                                                                      | (fixed)                               | Repo `prismatic/extern/hf/modeling_prismatic.py:785-789`                                                                                                         |
+| Masked action dimensions                    | Identity, through `q01 = -1` and `q99 = 1`                                                                            | (statistics)                          | Repo: mask for end-effector actions `prismatic/vla/datasets/rlds/oxe/materialize.py:35-39`, applied in `data_utils.py:79-83` and `modeling_prismatic.py:785-789` |
+| Masked dimensions for new training          | None: every dimension uses the dataset statistics                                                                     | (statistics)                          | This port; matches the original for joint-position actions (`materialize.py:43-45`), which suits the SO-100/SO-101 arm                                           |
+| Masked dimensions of the LIBERO checkpoints | The gripper                                                                                                           | (statistics)                          | Repo: `materialize.py:37-39`; recorded as `mask` in each checkpoint's `dataset_statistics.json`                                                                  |
 
 Why the mask matters for the LIBERO checkpoints: their gripper statistics are
-`q01 = 0` and `q99 = 1`. Normalizing the gripper would map it to `[-1, 1]`,
-while the network learned to predict it on the raw `[0, 1]` scale, so every
-gripper command would be misread after unnormalization. The checkpoint
-conversion therefore sets `action_norm_mask` from `dataset_statistics.json`.
+`q01 = 0` and `q99 = 1`. Normalizing the gripper with them would map it to
+`[-1, 1]`, while the network learned to predict it on the raw `[0, 1]` scale,
+so every gripper command would be misread after unnormalization.
 
 Differences from the original implementation (this port):
 
+- **Masked dimensions are clipped.** The original passes masked dimensions
+  through without clipping; here the identity mapping is followed by the same
+  clipping as every other dimension. This only changes values outside
+  `[-1, 1]`, and the LIBERO gripper actions are exactly 0 or 1.
 - **Epsilon.** The original always adds `1e-8` to `q99 − q01`; LeRobot only
   substitutes `1e-8` when the two are equal. The relative difference is about
   `1e-8` and has no practical effect.
-- **One mask per policy.** The original stores the mask inside the dataset
-  statistics; here it is a configuration field, so it is saved with the policy
-  and the processors and does not depend on the statistics format.
 
-How this was verified: `tests/test_processor.py` compares the preprocessor and
-postprocessor against direct transcriptions of the original formulas
-(`data_utils.py:72-83`, `modeling_prismatic.py:785-789`), including values
-outside `[q01, q99]` and a masked dimension, and checks that the mask survives
-saving and reloading the pipeline.
+How this was verified:
+
+- `tests/test_processor.py` compares the preprocessor and postprocessor with
+  direct transcriptions of the original formulas (`data_utils.py:72-83`,
+  `modeling_prismatic.py:785-789`), including values outside `[q01, q99]`, and
+  checks that the saved pipelines use LeRobot's `normalizer_processor` and
+  `unnormalizer_processor`.
+- `tests/test_convert_checkpoint.py` checks that masked gripper values pass
+  through both directions unchanged.
+- Against the previous implementation of this section (a custom normalizer with
+  an explicit mask), the libero-spatial statistics give identical normalized
+  states and unnormalized actions for 64 random inputs, including
+  out-of-range values. Normalized action targets differ only where the raw
+  gripper value exceeds 1, the clipping difference above.
 
 #### 8.3 Images
 
@@ -530,13 +552,13 @@ Released checkpoints:
 
 What each released file becomes:
 
-| Released file                           | Content                                                                              | Conversion                                                                                          |
-| --------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `model-0000{1..4}-of-00004.safetensors` | Vision backbone, vision projector, and Llama-2, with the LoRA weights already merged | Keys renamed as in the table below; unused weights dropped                                          |
-| `action_head--*.pt`                     | L1 regression action head (§6)                                                       | Keys renamed as in the table below                                                                  |
-| `proprio_projector--*.pt`               | Proprio projector (§3)                                                               | `module.` prefix removed                                                                            |
-| `dataset_statistics.json`               | `q01`, `q99`, and the action `mask`                                                  | LeRobot statistics for `observation.state` and `action`; the mask becomes `action_norm_mask` (§8.2) |
-| `lora_adapter/`                         | Unmerged LoRA weights                                                                | Not needed, since the model weights already include them                                            |
+| Released file                           | Content                                                                              | Conversion                                                                                                            |
+| --------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `model-0000{1..4}-of-00004.safetensors` | Vision backbone, vision projector, and Llama-2, with the LoRA weights already merged | Keys renamed as in the table below; unused weights dropped                                                            |
+| `action_head--*.pt`                     | L1 regression action head (§6)                                                       | Keys renamed as in the table below                                                                                    |
+| `proprio_projector--*.pt`               | Proprio projector (§3)                                                               | `module.` prefix removed                                                                                              |
+| `dataset_statistics.json`               | `q01`, `q99`, and the action `mask`                                                  | LeRobot statistics for `observation.state` and `action`; masked action dimensions get `q01 = -1` and `q99 = 1` (§8.2) |
+| `lora_adapter/`                         | Unmerged LoRA weights                                                                | Not needed, since the model weights already include them                                                              |
 
 Key mapping:
 

@@ -108,17 +108,25 @@ def load_released_weights(
     model.load_state_dict({k: v for k, v in converted.items() if k in expected}, strict=True)
 
 
-def convert_dataset_statistics(path: Path) -> tuple[dict[str, dict[str, Tensor]], list[bool]]:
-    """Reads `dataset_statistics.json` into LeRobot statistics and the action mask."""
+def convert_dataset_statistics(path: Path) -> dict[str, dict[str, Tensor]]:
+    """Reads `dataset_statistics.json` into LeRobot statistics for state and action.
+
+    The original leaves action dimensions whose `mask` entry is False unnormalized.
+    LeRobot's `QUANTILES` mode maps [q01, q99] to [-1, 1], which is the identity for
+    q01 = -1 and q99 = 1, so masked dimensions get those quantiles.
+    """
     (statistics,) = json.loads(path.read_text()).values()
     stats = {
         key: {name: torch.tensor(values) for name, values in statistics[source].items() if name != "mask"}
         for key, source in ((ACTION, "action"), (OBS_STATE, "proprio"))
     }
-    return stats, [bool(m) for m in statistics["action"]["mask"]]
+    unnormalized = ~torch.tensor(statistics["action"]["mask"])
+    stats[ACTION]["q01"] = torch.where(unnormalized, -1.0, stats[ACTION]["q01"])
+    stats[ACTION]["q99"] = torch.where(unnormalized, 1.0, stats[ACTION]["q99"])
+    return stats
 
 
-def libero_config(stats: dict[str, dict[str, Tensor]], action_norm_mask: list[bool]) -> OpenVLAOFTConfig:
+def libero_config(stats: dict[str, dict[str, Tensor]]) -> OpenVLAOFTConfig:
     """Configuration matching the released LIBERO checkpoints and LeRobot's LIBERO environment."""
     image = PolicyFeature(type=FeatureType.VISUAL, shape=(3, 224, 224))
     return OpenVLAOFTConfig(
@@ -129,7 +137,6 @@ def libero_config(stats: dict[str, dict[str, Tensor]], action_norm_mask: list[bo
         output_features={
             ACTION: PolicyFeature(type=FeatureType.ACTION, shape=tuple(stats[ACTION]["q01"].shape))
         },
-        action_norm_mask=action_norm_mask,
     )
 
 
@@ -144,8 +151,8 @@ def libero_processors(
 
 def convert(repo_id: str, output_dir: Path, revision: str | None = None) -> None:
     checkpoint = Path(snapshot_download(repo_id, revision=revision, allow_patterns=CHECKPOINT_FILES))
-    stats, action_norm_mask = convert_dataset_statistics(checkpoint / "dataset_statistics.json")
-    config = libero_config(stats, action_norm_mask)
+    stats = convert_dataset_statistics(checkpoint / "dataset_statistics.json")
+    config = libero_config(stats)
 
     policy = OpenVLAOFTPolicy(config)
     vla: dict[str, Tensor] = {}

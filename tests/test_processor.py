@@ -1,8 +1,9 @@
+import json
+
 import pytest
 import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.processor import PolicyProcessorPipeline
-from lerobot.processor.converters import policy_action_to_transition, transition_to_policy_action
 from lerobot.utils.constants import (
     ACTION,
     OBS_IMAGES,
@@ -34,13 +35,11 @@ def make_config():
             OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(2,)),
         },
         output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(2,))},
-        action_norm_mask=[True, False],
         device="cpu",
     )
 
 
 Q01, Q99 = torch.tensor([-0.5, 0.0]), torch.tensor([1.5, 1.0])
-MASK = torch.tensor([True, False])
 
 
 def make_stats():
@@ -48,14 +47,14 @@ def make_stats():
     return {OBS_STATE: stats, ACTION: stats}
 
 
-def original_normalize(x, mask):
-    """`prismatic/vla/datasets/rlds/utils/data_utils.py:72-83` (BOUNDS_Q99)."""
-    return torch.where(mask, torch.clamp(2 * (x - Q01) / (Q99 - Q01 + 1e-8) - 1, -1, 1), x)
+def original_normalize(x):
+    """`prismatic/vla/datasets/rlds/utils/data_utils.py:72-83` (BOUNDS_Q99) for unmasked dims."""
+    return torch.clamp(2 * (x - Q01) / (Q99 - Q01 + 1e-8) - 1, -1, 1)
 
 
-def original_unnormalize(a, mask):
-    """`prismatic/extern/hf/modeling_prismatic.py:785-789`."""
-    return torch.where(mask, 0.5 * (a + 1) * (Q99 - Q01 + 1e-8) + Q01, a)
+def original_unnormalize(a):
+    """`prismatic/extern/hf/modeling_prismatic.py:785-789` for unmasked dims."""
+    return 0.5 * (a + 1) * (Q99 - Q01 + 1e-8) + Q01
 
 
 @pytest.fixture(scope="module")
@@ -123,30 +122,29 @@ def test_normalization_matches_original_bounds_q99(processors):
 
     batch = preprocessor(make_observation(raw[0], action=raw))
 
-    torch.testing.assert_close(batch[ACTION], original_normalize(raw, MASK))
-    torch.testing.assert_close(batch[OBS_STATE][0], original_normalize(raw[0], torch.tensor([True, True])))
+    torch.testing.assert_close(batch[ACTION], original_normalize(raw))
+    torch.testing.assert_close(batch[OBS_STATE][0], original_normalize(raw[0]))
 
 
 def test_unnormalization_matches_original(processors):
     _, postprocessor = processors
     normalized = torch.tensor([[-1.0, 0.2], [0.5, 1.0], [1.3, -0.4]])
 
-    torch.testing.assert_close(postprocessor(normalized), original_unnormalize(normalized, MASK))
+    torch.testing.assert_close(postprocessor(normalized), original_unnormalize(normalized))
 
 
-def test_action_norm_mask_survives_round_trip(tmp_path, processors):
-    _, postprocessor = processors
+def test_uses_lerobot_normalizers_so_training_can_inject_dataset_stats(tmp_path, processors):
+    preprocessor, postprocessor = processors
+    preprocessor.save_pretrained(tmp_path)
     postprocessor.save_pretrained(tmp_path)
 
-    loaded = PolicyProcessorPipeline.from_pretrained(
-        tmp_path,
-        config_filename=f"{postprocessor.name}.json",
-        to_transition=policy_action_to_transition,
-        to_output=transition_to_policy_action,
-    )
+    names = {
+        name: [step["registry_name"] for step in json.loads((tmp_path / f"{name}.json").read_text())["steps"]]
+        for name in (preprocessor.name, postprocessor.name)
+    }
 
-    normalized = torch.tensor([[0.5, 0.25]])
-    torch.testing.assert_close(loaded(normalized), original_unnormalize(normalized, MASK))
+    assert names[preprocessor.name][-2:] == ["normalizer_processor", "openvla_oft_clip"]
+    assert names[postprocessor.name][0] == "unnormalizer_processor"
 
 
 def test_resizes_camera_images_only(processors):
