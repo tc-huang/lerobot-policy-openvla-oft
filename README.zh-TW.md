@@ -289,6 +289,18 @@ Policy 讀取以下 batch key，全部由 preprocessor 產生：
   訓練時的設定。在 autocast 下，float32 的 proprio 權重會在每次矩陣乘法前轉成
   bfloat16，因此計算結果與 bfloat16 權重相同；不過 autocast 會讓 LayerNorm 等部分
   運算以 float32 執行，因此評估時的數值可能與原始實作略有差異。
+- **Buffer 維持 float32。** 只有參數會轉成 `dtype`；buffer 維持建立時的 dtype：
+  Llama 的 RoPE 頻率（`inv_freq`）與 vision backbone 的像素統計值都維持 float32。
+  原始實作也把 RoPE 頻率維持在 float32：`LlamaRotaryEmbedding` 以 `.float()` 計算
+  它們（transformers fork 的 `modeling_llama.py:103`），模型以
+  `torch_dtype=torch.bfloat16` 載入後也不會再轉換整個模型。若把頻率轉成 bfloat16，
+  在序列尾端附近的位置 600，旋轉角度最多會偏移 0.7 rad；以 libero-spatial
+  checkpoint 實測，正規化後的 action 平均改變 0.0018（約為其大小的 1%），最大
+  0.012。
+- **Apple MPS 上的 RoPE。** `transformers` 只在 CPU 與 CUDA 上於計算 RoPE 時關閉
+  autocast。在 MPS 上，policy 的 autocast 仍然有效，因此旋轉角度（包括位置）會以
+  bfloat16 計算。這只影響在 Mac 上執行 policy；CUDA 上的評估與訓練都以 float32 計
+  算 RoPE。
 - **LeRobot 的 `use_amp`。** 請保持 `--policy.use_amp` 關閉。Policy 已經依
   `dtype` 套用 autocast；開啟 `use_amp` 會透過 `accelerate` 再疊加一層混合精度。
 - **載入時的記憶體。** 網路先以 float32 建立再轉成 `dtype`，因此建立完整模型時會
@@ -614,6 +626,9 @@ suite 共 500 次試驗。
 它。
 
 #### 結果
+
+這些結果是在修正 RoPE 頻率維持 float32 之前取得的（§7「Buffer 維持 float32」），
+當時頻率被轉成了 bfloat16。之後尚未重新執行。
 
 四個 suite 都以釋出的單一 suite checkpoint 評估，各跑一個 seed（`--seed=7`，每個
 suite 500 個 episode）。論文則是三個 seed 的平均。

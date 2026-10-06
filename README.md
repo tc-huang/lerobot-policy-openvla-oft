@@ -323,6 +323,22 @@ Notes:
   bfloat16 weights; however, autocast runs some operations, such as
   LayerNorm, in float32, so evaluation numerics can differ slightly from the
   original.
+- **Buffers stay in float32.** Only parameters are cast to `dtype`. Buffers
+  keep the dtype they were created with: Llama's RoPE frequencies
+  (`inv_freq`) and the vision backbone's pixel statistics stay float32. The
+  original also keeps the RoPE frequencies in float32: `LlamaRotaryEmbedding`
+  computes them with `.float()` (transformers fork, `modeling_llama.py:103`),
+  and the model is loaded with `torch_dtype=torch.bfloat16` without casting the
+  whole model afterwards. Casting the frequencies to bfloat16 shifts the
+  rotary angles by up to 0.7 radians at position 600, near the end of the
+  sequence; on the libero-spatial checkpoint this changed the normalized
+  actions by 0.0018 on average (about 1% of their magnitude), with a maximum of
+  0.012.
+- **RoPE on Apple MPS.** `transformers` turns autocast off around the RoPE
+  computation only for CPU and CUDA. On MPS, the policy's autocast stays
+  active, so rotary angles are computed in bfloat16, including the positions.
+  This only affects running the policy on a Mac; evaluation and training on
+  CUDA compute RoPE in float32.
 - **LeRobot `use_amp`.** Leave `--policy.use_amp` disabled. The policy already
   applies autocast based on `dtype`; enabling `use_amp` would add a second
   mixed-precision layer through `accelerate`.
@@ -681,6 +697,10 @@ How this is verified: `tests/test_processor.py` compares
 it after unnormalization.
 
 #### Results
+
+These results were obtained before the fix that keeps the RoPE frequencies in
+float32 (§7, "Buffers stay in float32"); at that point they were cast to
+bfloat16. They have not been rerun since.
 
 All four suites were evaluated with the released single-suite checkpoints, one
 seed each (`--seed=7`, 500 episodes per suite). The paper averages three seeds.

@@ -4,7 +4,7 @@ from typing import Any
 import torch
 from lerobot.policies import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS, OBS_STATE
-from torch import Tensor
+from torch import Tensor, nn
 
 from .configuration_openvla_oft import OpenVLAOFTConfig
 from .image_crop import crop_and_resize, crop_boxes
@@ -34,6 +34,16 @@ def build_model(config: OpenVLAOFTConfig) -> OpenVLAOFT:
     )
 
 
+def cast_parameters(module: nn.Module, dtype: torch.dtype) -> None:
+    """Casts the parameters of `module` to `dtype`, leaving buffers unchanged.
+
+    `Module.to(dtype)` would also cast buffers, turning Llama's float32 RoPE
+    frequencies into bfloat16, which the original never does.
+    """
+    for param in module.parameters():
+        param.data = param.data.to(dtype)
+
+
 class OpenVLAOFTPolicy(PreTrainedPolicy):
     """LeRobot policy wrapper around the OpenVLA-OFT network.
 
@@ -51,9 +61,9 @@ class OpenVLAOFTPolicy(PreTrainedPolicy):
         config.validate_features()
         self.config = config
         self.model = build_model(config)
-        self.model.to(self.dtype)
+        cast_parameters(self.model, self.dtype)
         if config.proprio_projector_fp32 and self.model.proprio_projector is not None:
-            self.model.proprio_projector.float()
+            cast_parameters(self.model.proprio_projector, torch.float32)
         self.reset()
 
     @property

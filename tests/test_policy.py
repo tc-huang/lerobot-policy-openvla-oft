@@ -90,6 +90,14 @@ def test_default_precision_keeps_proprio_projector_in_float32():
     assert policy.predict_action_chunk(make_batch()).shape == (BATCH_SIZE, CHUNK_SIZE, ACTION_DIM)
 
 
+def test_bfloat16_keeps_buffers_in_float32():
+    policy = OpenVLAOFTPolicy(make_config(dtype="bfloat16"))
+    rope = policy.model.llm.model.rotary_emb
+
+    assert {b.dtype for b in policy.model.buffers()} == {torch.float32}
+    torch.testing.assert_close(rope.inv_freq, rope.compute_default_rope_parameters(rope.config)[0])
+
+
 def test_proprio_projector_can_follow_model_dtype():
     policy = OpenVLAOFTPolicy(make_config(dtype="bfloat16", proprio_projector_fp32=False))
 
