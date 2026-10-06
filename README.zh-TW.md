@@ -47,6 +47,7 @@ follower 手臂上。
 | Proprio projector 權重         | float32                             | `proprio_projector_fp32`                          | 原 repo `vla-scripts/finetune.py:878-884`（未設定 `to_bf16`）；論文未提及                              |
 | 混合精度                       | Forward 在 bfloat16 autocast 下執行 | （跟隨 `dtype`）                                  | 原 repo `vla-scripts/finetune.py:327`；論文未提及                                                      |
 | 補值的 chunk 步驟是否計入 loss | 計入，其值為最後一個 action 的複本  | `mask_padded_actions`（False）                    | 原 repo `prismatic/vla/datasets/rlds/traj_transforms.py:44`、`vla-scripts/finetune.py:390`；論文未提及 |
+| 編譯                           | 關閉                                | `compile_model`、`compile_mode`（`default`）      | 本專案；比照 LeRobot 的 pi0 與 SmolVLA（`compile_model`、`compile_mode`）                              |
 
 原始實作在 import 時透過檢查命令列參數來決定 chunk 大小與正規化方式
 （`prismatic/vla/constants.py`）；本專案則將它們明確定義為 configuration 欄位。
@@ -301,6 +302,14 @@ Policy 讀取以下 batch key，全部由 preprocessor 產生：
   autocast。在 MPS 上，policy 的 autocast 仍然有效，因此旋轉角度（包括位置）會以
   bfloat16 計算。這只影響在 Mac 上執行 policy；CUDA 上的評估與訓練都以 float32 計
   算 RoPE。
+- **編譯。** 設定 `--policy.compile_model=true` 時，policy 會以 `torch.compile` 編譯網路
+  （模式由 `--policy.compile_mode` 選擇）。它使用 `nn.Module.compile`，就地編譯模組
+  的呼叫，而不是把模組包起來，因此參數名稱、checkpoint 與 LoRA 的套用對象都不會改變；第
+  一次呼叫時才會 trace 網路，此時 `lerobot-train` 已經加上 LoRA adapter。網路會編譯
+  成單一 graph，沒有 graph break。由於 prompt 會補齊到 batch 中最長的那一個，出現
+  第二種 prompt 長度時會以 dynamic shape 重新編譯一次，之後就不會再重新編譯。第一
+  次呼叫需要負擔編譯時間，因此短時間的執行整體可能反而變慢；Inductor 對 MPS 的支
+  援也有限。CUDA 上的加速幅度尚未量測。
 - **LeRobot 的 `use_amp`。** 請保持 `--policy.use_amp` 關閉。Policy 已經依
   `dtype` 套用 autocast；開啟 `use_amp` 會透過 `accelerate` 再疊加一層混合精度。
 - **載入時不做隨機初始化。** `OpenVLAOFTPolicy.from_pretrained` 建立網路時，把參數

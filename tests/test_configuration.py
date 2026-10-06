@@ -78,3 +78,8 @@ def test_rejects_unsupported_dtype():
 def test_rejects_image_crop_scale_outside_unit_interval(scale):
     with pytest.raises(ValueError, match="image_crop_scale"):
         OpenVLAOFTConfig(image_crop_scale=scale)
+
+
+def test_rejects_unknown_compile_mode():
+    with pytest.raises(ValueError, match="compile_mode"):
+        OpenVLAOFTConfig(compile_mode="fast")

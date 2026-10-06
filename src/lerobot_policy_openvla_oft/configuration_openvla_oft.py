@@ -7,6 +7,8 @@ from lerobot.optim.schedulers import LRSchedulerConfig
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import MultiStepLR
 
+COMPILE_MODES = ("default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs")
+
 
 @LRSchedulerConfig.register_subclass("openvla_oft_step_decay")
 @dataclass
@@ -44,6 +46,8 @@ class OpenVLAOFTConfig(PreTrainedConfig):
         proprio_projector_fp32: Keep the proprio projector weights in float32.
         mask_padded_actions: Exclude chunk steps past the end of an episode from the
             loss. When False, they are trained on the repeated last action.
+        compile_model: Compile the network's forward pass with `torch.compile`.
+        compile_mode: `torch.compile` mode used when `compile_model` is True.
         optimizer_lr: Peak learning rate.
         optimizer_weight_decay: AdamW weight decay.
         optimizer_grad_clip_norm: Gradient clipping norm; 0 disables clipping.
@@ -71,6 +75,9 @@ class OpenVLAOFTConfig(PreTrainedConfig):
 
     mask_padded_actions: bool = False
 
+    compile_model: bool = False
+    compile_mode: str = "default"
+
     optimizer_lr: float = 5e-4
     optimizer_weight_decay: float = 1e-2
     optimizer_grad_clip_norm: float = 0.0
@@ -86,6 +93,8 @@ class OpenVLAOFTConfig(PreTrainedConfig):
             )
         if not 0 < self.image_crop_scale <= 1:
             raise ValueError(f"`image_crop_scale` must be in (0, 1], got {self.image_crop_scale}.")
+        if self.compile_mode not in COMPILE_MODES:
+            raise ValueError(f"`compile_mode` must be one of {COMPILE_MODES}, got {self.compile_mode!r}.")
         if self.dtype not in ("bfloat16", "float32"):
             raise ValueError(f"`dtype` must be 'bfloat16' or 'float32', got {self.dtype!r}.")
 

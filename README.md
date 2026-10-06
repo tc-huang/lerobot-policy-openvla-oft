@@ -50,6 +50,7 @@ the LIBERO recipe.
 | Proprio projector weights      | float32                                | `proprio_projector_fp32`                          | Repo `vla-scripts/finetune.py:878-884` (no `to_bf16`); not stated in the paper                                   |
 | Mixed precision                | Forward under bfloat16 autocast        | (follows `dtype`)                                 | Repo `vla-scripts/finetune.py:327`; not stated in the paper                                                      |
 | Padded chunk steps in the loss | Included, as copies of the last action | `mask_padded_actions` (False)                     | Repo `prismatic/vla/datasets/rlds/traj_transforms.py:44`, `vla-scripts/finetune.py:390`; not stated in the paper |
+| Compilation                    | Off                                    | `compile_model`, `compile_mode` (`default`)       | This port; follows LeRobot's pi0 and SmolVLA (`compile_model`, `compile_mode`)                                   |
 
 The original implementation selects the chunk size and normalization scheme at
 import time by inspecting the command line (`prismatic/vla/constants.py`);
@@ -339,6 +340,18 @@ Notes:
   active, so rotary angles are computed in bfloat16, including the positions.
   This only affects running the policy on a Mac; evaluation and training on
   CUDA compute RoPE in float32.
+- **Compilation.** With `--policy.compile_model=true`, the policy compiles the
+  network with `torch.compile` (`--policy.compile_mode` selects the mode). It
+  uses `nn.Module.compile`, which compiles the module's call in place instead
+  of wrapping the module, so parameter names, checkpoints, and LoRA targets are
+  unchanged, and the first call traces the network after `lerobot-train` has
+  added the LoRA adapters.
+  The network compiles to a single graph without graph breaks. Because
+  prompts are padded to the longest one in each batch, a second prompt length
+  triggers one recompilation with dynamic shapes, after which no further
+  recompilation happens. The first call pays the compilation time, so short
+  runs can be slower overall, and Inductor's support for MPS is limited. The
+  speedup on CUDA has not been measured yet.
 - **LeRobot `use_amp`.** Leave `--policy.use_amp` disabled. The policy already
   applies autocast based on `dtype`; enabling `use_amp` would add a second
   mixed-precision layer through `accelerate`.

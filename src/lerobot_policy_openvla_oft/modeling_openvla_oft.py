@@ -106,6 +106,8 @@ class OpenVLAOFTPolicy(PreTrainedPolicy):
         cast_parameters(self.model, self.dtype)
         if config.proprio_projector_fp32 and self.model.proprio_projector is not None:
             cast_parameters(self.model.proprio_projector, torch.float32)
+        if config.compile_model:
+            self.model.compile(mode=config.compile_mode)
         self.reset()
 
     @classmethod
