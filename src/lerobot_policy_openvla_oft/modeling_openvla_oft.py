@@ -46,7 +46,7 @@ class OpenVLAOFTPolicy(PreTrainedPolicy):
     config_class = OpenVLAOFTConfig
     name = "openvla_oft"
 
-    def __init__(self, config: OpenVLAOFTConfig, dataset_stats: dict[str, Any] | None = None):
+    def __init__(self, config: OpenVLAOFTConfig, dataset_stats: dict[str, Any] | None = None, **kwargs: Any):
         super().__init__(config, dataset_stats)
         config.validate_features()
         self.config = config

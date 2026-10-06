@@ -35,6 +35,10 @@ def test_resolved_by_lerobot_factory():
     assert get_policy_class("openvla_oft") is OpenVLAOFTPolicy
 
 
+def test_accepts_extra_arguments_from_make_policy():
+    OpenVLAOFTPolicy(make_config(), dataset_stats=None, dataset_meta=None)
+
+
 def test_forward_returns_differentiable_l1_loss():
     policy = OpenVLAOFTPolicy(make_config()).eval()
     batch = make_batch()
