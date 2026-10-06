@@ -1,0 +1,64 @@
+# LoRA fine-tuning of OpenVLA-OFT from the base OpenVLA model with lerobot-train.
+#
+#   sky launch -c openvla-oft-train skypilot/train_lora.yaml -i 15 --down \
+#       --env STEPS=200 --env BATCH_SIZE=2
+
+name: openvla-oft-lora-train
+
+resources:
+  infra: runpod
+  disk_size: 100
+  # Loading the policy for training peaks at about 45 GB of host memory.
+  ordered:
+    - accelerators: L40:1
+    - accelerators: L40S:1
+
+workdir: .
+
+envs:
+  BASE: openvla/openvla-7b
+  DATASET: lerobot/libero
+  NUM_GPUS: "1"
+  BATCH_SIZE: "8"
+  STEPS: "150000"
+  SAVE_FREQ: "10000"
+  LOG_FREQ: "100"
+  RUN_NAME: libero
+
+setup: |
+  set -euo pipefail
+  SUDO=$([ "$(id -u)" -eq 0 ] || echo sudo)
+  $SUDO apt-get update -qq
+  $SUDO apt-get install -y -qq libegl1 libgl1 libglib2.0-0 libosmesa6 ffmpeg
+  command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+  uv sync --extra libero --extra training
+  # LIBERO asks for a dataset path on first import; answer N to write the default config.
+  echo N | uv run --extra libero --extra training python -c "import libero.libero"
+
+run: |
+  set -euo pipefail
+  export PATH="$HOME/.local/bin:$PATH"
+  BASE_DIR="outputs/checkpoints/$(basename "$BASE")"
+  if [ ! -f "$BASE_DIR/model.safetensors" ]; then
+    uv run --extra libero --extra training python -m lerobot_policy_openvla_oft.convert_checkpoint \
+      --base --repo-id "$BASE" --output-dir "$BASE_DIR"
+  fi
+  MULTI_GPU=$([ "$NUM_GPUS" -gt 1 ] && echo --multi_gpu || true)
+  uv run --extra libero --extra training accelerate launch $MULTI_GPU --num_processes="$NUM_GPUS" \
+    .venv/bin/lerobot-train \
+    --policy.path="$BASE_DIR" \
+    --policy.push_to_hub=false \
+    --peft.method_type=LORA \
+    --peft.r=32 \
+    --dataset.repo_id="$DATASET" \
+    --dataset.image_transforms.enable=true \
+    --dataset.image_transforms.max_num_transforms=4 \
+    --dataset.image_transforms.tfs='{"brightness": {"type": "ColorJitter", "kwargs": {"brightness": [0.8, 1.2]}}, "contrast": {"type": "ColorJitter", "kwargs": {"contrast": [0.8, 1.2]}}, "saturation": {"type": "ColorJitter", "kwargs": {"saturation": [0.8, 1.2]}}, "hue": {"type": "ColorJitter", "kwargs": {"hue": [-0.05, 0.05]}}}' \
+    --batch_size="$BATCH_SIZE" \
+    --steps="$STEPS" \
+    --save_freq="$SAVE_FREQ" \
+    --log_freq="$LOG_FREQ" \
+    --num_workers=8 \
+    --job_name="$RUN_NAME" \
+    --output_dir="outputs/train/$RUN_NAME-$(date +%Y%m%d-%H%M%S)"
