@@ -29,8 +29,85 @@ follower 手臂上。OpenVLA-OFT+ 的 FiLM 語言條件化則作為選用功能�
 - [x] FiLM（OpenVLA-OFT+），已逐 block 與原始實作比對（§12）。
 - [ ] FiLM 的端到端驗證；原作者沒有釋出 OpenVLA-OFT+ checkpoint。
 - [ ] 以 `lerobot-rollout` 部署到 SO-100 或 SO-101 follower 手臂。
-- [ ] 安裝與快速上手說明。
+- [x] 安裝與快速上手說明。
 - [ ] 持續整合（CI）。
+
+## 安裝
+
+| 需求        | 值                                                          |
+| ----------- | ----------------------------------------------------------- |
+| Python      | 3.12 以上，以 [uv](https://docs.astral.sh/uv/) 管理         |
+| LIBERO 評估 | Linux 與 NVIDIA GPU；§10 的評估是在 48 GB 的 L40S 上執行    |
+| 主機記憶體  | 轉換 checkpoint 約需 16 GB，載入約需 31 GB                  |
+| 磁碟        | 每個 checkpoint 約 30 GB：下載 15.5 GB，轉換後的權重 15 GB  |
+| 訓練        | §11 的 smoke test 在 batch size 2 時使用 26.4 GB GPU 記憶體 |
+
+```bash
+git clone --recurse-submodules https://github.com/tc-huang/lerobot-policy-openvla-oft.git
+cd lerobot-policy-openvla-oft
+uv sync
+```
+
+`third_party/openvla-oft` submodule 存放原始程式碼，供參考與一個測試使用；插件本身
+不需要它。選用的 extra 會加入 LeRobot 的 LIBERO 模擬與訓練相依套件：
+
+| 指令                       | 加入的內容                                                  |
+| -------------------------- | ----------------------------------------------------------- |
+| `uv sync`                  | Policy 與 checkpoint 轉換                                   |
+| `uv sync --extra libero`   | `lerobot-eval` 用的 LIBERO（僅限 Linux；固定 `mujoco<3.4`） |
+| `uv sync --extra training` | `lerobot-train` 需要的資料集載入與 `accelerate`             |
+
+`uv run` 執行指令前會先安裝指定的 extra，因此下列指令都帶有各自的 `--extra`，在剛 clone
+的環境中也能直接執行。
+
+在 Linux 上，LIBERO 還需要幾個系統函式庫、一次性的設定，以及無頭（headless）
+算圖：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libegl1 libgl1 libglib2.0-0 libosmesa6 ffmpeg
+uv sync --extra libero
+# LIBERO asks for a dataset path on first import; answer N to keep the default.
+echo N | uv run --extra libero python -c "import libero.libero"
+export MUJOCO_GL=egl
+```
+
+## 快速上手
+
+轉換一個原作者釋出的 checkpoint，並跑兩個 LIBERO-Spatial episode：
+
+```bash
+# 1. Convert the checkpoint (downloads about 15.5 GB).
+uv run --extra libero python -m lerobot_policy_openvla_oft.convert_checkpoint \
+    --repo-id moojink/openvla-7b-oft-finetuned-libero-spatial \
+    --output-dir outputs/checkpoints/libero-spatial
+
+# 2. Evaluate it on the first task.
+uv run --extra libero lerobot-eval \
+    --policy.path=outputs/checkpoints/libero-spatial \
+    --policy.device=cuda \
+    --env.type=libero \
+    --env.task=libero_spatial \
+    --env.task_ids="[0]" \
+    --env.observation_height=256 \
+    --env.observation_width=256 \
+    --env.episode_length=220 \
+    --eval.n_episodes=2 \
+    --eval.batch_size=2 \
+    --seed=7
+```
+
+結果會寫到 `outputs/eval/` 底下。完整的評估流程（每個 suite 500 個 episode）見
+§10，LoRA fine-tune 的指令見 §11。
+
+若要改在租用的 GPU 上執行相同步驟，`skypilot/libero_eval.yaml` 會在 RunPod 上啟動
+一個 [SkyPilot](https://docs.skypilot.co/) 工作，結束後關閉機器。RunPod 按小時
+計費。
+
+```bash
+sky launch -c openvla-oft-eval skypilot/libero_eval.yaml -i 15 --down \
+    --env SUITE=libero_spatial --env TASK_IDS="[0]" --env N_EPISODES=2 --env BATCH_SIZE=2
+```
 
 ## 設計
 

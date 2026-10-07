@@ -36,8 +36,86 @@ as an option (§12). The project is a work in progress; see
 - [ ] End-to-end FiLM verification; the authors have released no OpenVLA-OFT+
       checkpoint.
 - [ ] Deployment on an SO-100 or SO-101 follower arm with `lerobot-rollout`.
-- [ ] Installation and quick-start guide.
+- [x] Installation and quick-start guide.
 - [ ] Continuous integration.
+
+## Installation
+
+| Requirement       | Value                                                                         |
+| ----------------- | ----------------------------------------------------------------------------- |
+| Python            | 3.12 or newer, managed with [uv](https://docs.astral.sh/uv/)                  |
+| LIBERO evaluation | Linux with an NVIDIA GPU; the evaluations in §10 ran on a 48 GB L40S          |
+| Host memory       | About 16 GB to convert a checkpoint and 31 GB to load one                     |
+| Disk              | About 30 GB per checkpoint: a 15.5 GB download and 15 GB of converted weights |
+| Training          | The smoke test in §11 used 26.4 GB of GPU memory at batch size 2              |
+
+```bash
+git clone --recurse-submodules https://github.com/tc-huang/lerobot-policy-openvla-oft.git
+cd lerobot-policy-openvla-oft
+uv sync
+```
+
+The `third_party/openvla-oft` submodule holds the original code for reference
+and for one test; the plugin works without it. Optional extras add LeRobot's
+LIBERO simulation and training dependencies:
+
+| Command                    | Adds                                                      |
+| -------------------------- | --------------------------------------------------------- |
+| `uv sync`                  | The policy and checkpoint conversion                      |
+| `uv sync --extra libero`   | LIBERO for `lerobot-eval` (Linux only; pins `mujoco<3.4`) |
+| `uv sync --extra training` | Dataset loading and `accelerate` for `lerobot-train`      |
+
+`uv run` installs the extras passed to it before running a command, so the
+commands below include their `--extra` flags and also work in a fresh clone.
+
+On Linux, LIBERO also needs a few system libraries, a one-time configuration,
+and headless rendering:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libegl1 libgl1 libglib2.0-0 libosmesa6 ffmpeg
+uv sync --extra libero
+# LIBERO asks for a dataset path on first import; answer N to keep the default.
+echo N | uv run --extra libero python -c "import libero.libero"
+export MUJOCO_GL=egl
+```
+
+## Quick start
+
+Convert a released checkpoint and run two LIBERO-Spatial episodes:
+
+```bash
+# 1. Convert the checkpoint (downloads about 15.5 GB).
+uv run --extra libero python -m lerobot_policy_openvla_oft.convert_checkpoint \
+    --repo-id moojink/openvla-7b-oft-finetuned-libero-spatial \
+    --output-dir outputs/checkpoints/libero-spatial
+
+# 2. Evaluate it on the first task.
+uv run --extra libero lerobot-eval \
+    --policy.path=outputs/checkpoints/libero-spatial \
+    --policy.device=cuda \
+    --env.type=libero \
+    --env.task=libero_spatial \
+    --env.task_ids="[0]" \
+    --env.observation_height=256 \
+    --env.observation_width=256 \
+    --env.episode_length=220 \
+    --eval.n_episodes=2 \
+    --eval.batch_size=2 \
+    --seed=7
+```
+
+Results are written under `outputs/eval/`. §10 gives the full protocol (500
+episodes per suite) and §11 the LoRA fine-tuning command.
+
+To run the same steps on a rented GPU instead, `skypilot/libero_eval.yaml`
+launches a [SkyPilot](https://docs.skypilot.co/) job on RunPod and shuts the
+machine down afterwards. RunPod bills by the hour.
+
+```bash
+sky launch -c openvla-oft-eval skypilot/libero_eval.yaml -i 15 --down \
+    --env SUITE=libero_spatial --env TASK_IDS="[0]" --env N_EPISODES=2 --env BATCH_SIZE=2
+```
 
 ## Design
 
