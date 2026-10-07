@@ -1049,3 +1049,21 @@ Jin Kim, Chelsea Finn, and Percy Liang. If you use it, please cite their
   year={2025}
 }
 ```
+
+## License
+
+The code in this repository is licensed under the
+[Apache License 2.0](LICENSE).
+
+- This plugin is a port of
+  [OpenVLA-OFT](https://github.com/moojink/openvla-oft), which is licensed
+  under the MIT License, Copyright (c) 2025 Moo Jin Kim, Chelsea Finn, Percy
+  Liang. The original code is referenced as the `third_party/openvla-oft`
+  submodule and is not copied into this repository.
+- `.pre-commit-config.yaml` and the tool settings in `pyproject.toml` are
+  adapted from [LeRobot](https://github.com/huggingface/lerobot), which is
+  licensed under the Apache License 2.0.
+- This repository contains no model weights. Checkpoints that are downloaded or
+  converted with it, such as `openvla/openvla-7b` and the released OpenVLA-OFT
+  checkpoints, are subject to their own licenses, which may include the Llama 2
+  Community License of the underlying language model.

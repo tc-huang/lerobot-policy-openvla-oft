@@ -3,6 +3,8 @@ name = "lerobot_policy_openvla_oft"
 version = "0.1.0"
 description = "OpenVLA-OFT policy plugin for LeRobot"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "HUANG TZU-CHUN", email = "tzu.chun.huang.tw@gmail.com" }
 ]

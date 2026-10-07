@@ -948,3 +948,17 @@ Percy Liang 提出。若使用本插件，請引用他們的[論文](https://arx
   year={2025}
 }
 ```
+
+## 授權
+
+本 repo 的程式碼採用 [Apache License 2.0](LICENSE) 授權。
+
+- 本插件移植自 [OpenVLA-OFT](https://github.com/moojink/openvla-oft)，其採用 MIT
+  授權，Copyright (c) 2025 Moo Jin Kim, Chelsea Finn, Percy Liang。原始程式碼以
+  `third_party/openvla-oft` submodule 參照，並未複製到本 repo 中。
+- `.pre-commit-config.yaml` 與 `pyproject.toml` 中的工具設定改寫自
+  [LeRobot](https://github.com/huggingface/lerobot)，其採用 Apache License 2.0
+  授權。
+- 本 repo 不含任何模型權重。透過本專案下載或轉換的 checkpoint，例如
+  `openvla/openvla-7b` 與原作者釋出的 OpenVLA-OFT checkpoint，適用其各自的授權，
+  其中可能包含底層語言模型的 Llama 2 Community License。
