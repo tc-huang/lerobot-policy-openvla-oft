@@ -8,9 +8,36 @@ that ports [OpenVLA-OFT](https://openvla-oft.github.io/)
 It converts the official LIBERO checkpoints released by the authors into
 LeRobot's format and evaluates them with `lerobot-eval`, aiming to reproduce
 the LIBERO results reported in the paper. It also supports LoRA fine-tuning
-from `openvla/openvla-7b` with `lerobot-train`, and deploying the fine-tuned
-policy on a single SO-100 or SO-101 follower arm with `lerobot-rollout`.
-FiLM language conditioning from OpenVLA-OFT+ is available as an option (§12).
+from `openvla/openvla-7b` with `lerobot-train`, with the goal of deploying the
+fine-tuned policy on a single SO-100 or SO-101 follower arm with
+`lerobot-rollout`. FiLM language conditioning from OpenVLA-OFT+ is available
+as an option (§12). The project is a work in progress; see
+[Status](#status) for what has been verified.
+
+## Status
+
+- [x] Convert the released OpenVLA-OFT LIBERO checkpoints (§9).
+- [x] Evaluate them with `lerobot-eval`: 96.85% average success over the four
+      suites, against 97.1% in the paper (§10). These runs predate the RoPE
+      precision fix in `2c7e436`.
+- [ ] Re-run the LIBERO evaluation after the RoPE precision fix.
+- [ ] Convert and evaluate the released checkpoint trained on all four suites
+      (`moojink/openvla-7b-oft-finetuned-libero-spatial-object-goal-10`).
+- [x] LoRA fine-tuning from `openvla/openvla-7b` with `lerobot-train`, checked
+      by a 200-step smoke test on one GPU (§11).
+- [ ] A full LoRA fine-tuning run that reproduces the paper's LIBERO results.
+- [ ] Check that `lerobot/libero` matches the original `*_no_noops` training
+      data.
+- [ ] Multi-GPU training on real hardware; the `accelerate` command in §11 has
+      only been run with one process.
+- [ ] Measure training speed and memory at batch size 8, with and without
+      `compile_model`.
+- [x] FiLM (OpenVLA-OFT+), checked block by block against the original (§12).
+- [ ] End-to-end FiLM verification; the authors have released no OpenVLA-OFT+
+      checkpoint.
+- [ ] Deployment on an SO-100 or SO-101 follower arm with `lerobot-rollout`.
+- [ ] Installation and quick-start guide.
+- [ ] Continuous integration.
 
 ## Design
 

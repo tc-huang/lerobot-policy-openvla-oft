@@ -7,9 +7,30 @@ policy 插件，將 [OpenVLA-OFT](https://openvla-oft.github.io/)（Kim、Finn �
 Liang，2025）移植到 LeRobot v0.6.1，以 `--policy.type openvla_oft` 使用。插件
 可將原作者釋出的官方 LIBERO checkpoint 轉換為 LeRobot 格式，並以
 `lerobot-eval` 評估，目標是復現論文中的 LIBERO 結果。此外也支援以
-`lerobot-train` 從 `openvla/openvla-7b` 進行 LoRA fine-tune，並以
+`lerobot-train` 從 `openvla/openvla-7b` 進行 LoRA fine-tune，目標是以
 `lerobot-rollout` 將 fine-tune 後的 policy 部署到單臂 SO-100 或 SO-101
-follower 手臂上。OpenVLA-OFT+ 的 FiLM 語言條件化則作為選用功能提供（§12）。
+follower 手臂上。OpenVLA-OFT+ 的 FiLM 語言條件化則作為選用功能提供（§12）。本專案
+仍在開發中，已驗證的項目請見[狀態](#狀態)。
+
+## 狀態
+
+- [x] 轉換原作者釋出的 OpenVLA-OFT LIBERO checkpoint（§9）。
+- [x] 以 `lerobot-eval` 評估：四個 suite 的平均成功率為 96.85%，論文為 97.1%
+      （§10）。這些結果是在 `2c7e436` 修正 RoPE 精度之前跑的。
+- [ ] 修正 RoPE 精度後重跑 LIBERO 評估。
+- [ ] 轉換並評估以四個 suite 共同訓練的 checkpoint
+      （`moojink/openvla-7b-oft-finetuned-libero-spatial-object-goal-10`）。
+- [x] 以 `lerobot-train` 從 `openvla/openvla-7b` 進行 LoRA fine-tune，已在單張 GPU
+      上以 200 步的 smoke test 驗證（§11）。
+- [ ] 完整的 LoRA fine-tune，復現論文的 LIBERO 結果。
+- [ ] 確認 `lerobot/libero` 與原始的 `*_no_noops` 訓練資料一致。
+- [ ] 在實際硬體上進行多 GPU 訓練；§11 的 `accelerate` 指令只以單一 process 跑過。
+- [ ] 量測 batch size 8 時的訓練速度與記憶體，以及開關 `compile_model` 的差異。
+- [x] FiLM（OpenVLA-OFT+），已逐 block 與原始實作比對（§12）。
+- [ ] FiLM 的端到端驗證；原作者沒有釋出 OpenVLA-OFT+ checkpoint。
+- [ ] 以 `lerobot-rollout` 部署到 SO-100 或 SO-101 follower 手臂。
+- [ ] 安裝與快速上手說明。
+- [ ] 持續整合（CI）。
 
 ## 設計
 
