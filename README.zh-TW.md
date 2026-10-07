@@ -934,3 +934,17 @@ block 的層中，確認兩者產生相同的特徵。`tests/test_model.py` 檢�
 policy 開始訓練時會被初始化。原作者沒有釋出任何 OpenVLA-OFT+ checkpoint（Hugging Face
 Hub 上只有五個 LIBERO 的 OpenVLA-OFT checkpoint），因此端到端的行為尚未與原始實作
 對照。
+
+## 引用
+
+本插件是 OpenVLA-OFT 的獨立移植，OpenVLA-OFT 由 Moo Jin Kim、Chelsea Finn 與
+Percy Liang 提出。若使用本插件，請引用他們的[論文](https://arxiv.org/abs/2502.19645)：
+
+```bibtex
+@article{kim2025fine,
+  title={Fine-Tuning Vision-Language-Action Models: Optimizing Speed and Success},
+  author={Kim, Moo Jin and Finn, Chelsea and Liang, Percy},
+  journal={arXiv preprint arXiv:2502.19645},
+  year={2025}
+}
+```

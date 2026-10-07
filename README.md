@@ -1034,3 +1034,18 @@ are trained in full and initialized when training starts from the base policy.
 The authors have released no OpenVLA-OFT+ checkpoint (only the five LIBERO
 OpenVLA-OFT checkpoints are on the Hugging Face Hub), so end-to-end behavior has
 not been checked against the original.
+
+## Citation
+
+This plugin is an independent port of OpenVLA-OFT, which was developed by Moo
+Jin Kim, Chelsea Finn, and Percy Liang. If you use it, please cite their
+[paper](https://arxiv.org/abs/2502.19645):
+
+```bibtex
+@article{kim2025fine,
+  title={Fine-Tuning Vision-Language-Action Models: Optimizing Speed and Success},
+  author={Kim, Moo Jin and Finn, Chelsea and Liang, Percy},
+  journal={arXiv preprint arXiv:2502.19645},
+  year={2025}
+}
+```
