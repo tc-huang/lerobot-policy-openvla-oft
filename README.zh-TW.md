@@ -789,22 +789,22 @@ adapter（`--peft.*`），只儲存 adapter 與完整訓練的模組。對 OpenV
 
 ```bash
 # 1. 轉換一次 base OpenVLA 模型（約 15 GB）。
-uv run python -m lerobot_policy_openvla_oft.convert_checkpoint --base \\
-    --repo-id openvla/openvla-7b \\
+uv run --extra training python -m lerobot_policy_openvla_oft.convert_checkpoint --base \
+    --repo-id openvla/openvla-7b \
     --output-dir outputs/checkpoints/openvla-7b
 
 # 2. 以 8 張 GPU 做 LoRA fine-tune（每張 8 筆，共 64 筆）。
-uv run accelerate launch --multi_gpu --num_processes=8 $(uv run which lerobot-train) \\
-    --policy.path=outputs/checkpoints/openvla-7b \\
-    --policy.push_to_hub=false \\
-    --peft.method_type=LORA \\
-    --peft.r=32 \\
-    --dataset.repo_id=lerobot/libero \\
-    --dataset.image_transforms.enable=true \\
-    --dataset.image_transforms.max_num_transforms=4 \\
-    --dataset.image_transforms.tfs='{"brightness": {"type": "ColorJitter", "kwargs": {"brightness": [0.8, 1.2]}}, "contrast": {"type": "ColorJitter", "kwargs": {"contrast": [0.8, 1.2]}}, "saturation": {"type": "ColorJitter", "kwargs": {"saturation": [0.8, 1.2]}}, "hue": {"type": "ColorJitter", "kwargs": {"hue": [-0.05, 0.05]}}}' \\
-    --batch_size=8 \\
-    --steps=150000 \\
+uv run --extra training accelerate launch --multi_gpu --num_processes=8 .venv/bin/lerobot-train \
+    --policy.path=outputs/checkpoints/openvla-7b \
+    --policy.push_to_hub=false \
+    --peft.method_type=LORA \
+    --peft.r=32 \
+    --dataset.repo_id=lerobot/libero \
+    --dataset.image_transforms.enable=true \
+    --dataset.image_transforms.max_num_transforms=4 \
+    --dataset.image_transforms.tfs='{"brightness": {"type": "ColorJitter", "kwargs": {"brightness": [0.8, 1.2]}}, "contrast": {"type": "ColorJitter", "kwargs": {"contrast": [0.8, 1.2]}}, "saturation": {"type": "ColorJitter", "kwargs": {"saturation": [0.8, 1.2]}}, "hue": {"type": "ColorJitter", "kwargs": {"hue": [-0.05, 0.05]}}}' \
+    --batch_size=8 \
+    --steps=150000 \
     --output_dir=outputs/train/openvla-oft-libero
 ```
 

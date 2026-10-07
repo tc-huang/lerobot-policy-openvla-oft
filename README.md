@@ -879,22 +879,22 @@ model converted by `convert_checkpoint.py --base`.
 
 ```bash
 # 1. Convert the base OpenVLA model once (about 15 GB).
-uv run python -m lerobot_policy_openvla_oft.convert_checkpoint --base \\
-    --repo-id openvla/openvla-7b \\
+uv run --extra training python -m lerobot_policy_openvla_oft.convert_checkpoint --base \
+    --repo-id openvla/openvla-7b \
     --output-dir outputs/checkpoints/openvla-7b
 
 # 2. Fine-tune with LoRA on 8 GPUs (8 per GPU, 64 in total).
-uv run accelerate launch --multi_gpu --num_processes=8 $(uv run which lerobot-train) \\
-    --policy.path=outputs/checkpoints/openvla-7b \\
-    --policy.push_to_hub=false \\
-    --peft.method_type=LORA \\
-    --peft.r=32 \\
-    --dataset.repo_id=lerobot/libero \\
-    --dataset.image_transforms.enable=true \\
-    --dataset.image_transforms.max_num_transforms=4 \\
-    --dataset.image_transforms.tfs='{"brightness": {"type": "ColorJitter", "kwargs": {"brightness": [0.8, 1.2]}}, "contrast": {"type": "ColorJitter", "kwargs": {"contrast": [0.8, 1.2]}}, "saturation": {"type": "ColorJitter", "kwargs": {"saturation": [0.8, 1.2]}}, "hue": {"type": "ColorJitter", "kwargs": {"hue": [-0.05, 0.05]}}}' \\
-    --batch_size=8 \\
-    --steps=150000 \\
+uv run --extra training accelerate launch --multi_gpu --num_processes=8 .venv/bin/lerobot-train \
+    --policy.path=outputs/checkpoints/openvla-7b \
+    --policy.push_to_hub=false \
+    --peft.method_type=LORA \
+    --peft.r=32 \
+    --dataset.repo_id=lerobot/libero \
+    --dataset.image_transforms.enable=true \
+    --dataset.image_transforms.max_num_transforms=4 \
+    --dataset.image_transforms.tfs='{"brightness": {"type": "ColorJitter", "kwargs": {"brightness": [0.8, 1.2]}}, "contrast": {"type": "ColorJitter", "kwargs": {"contrast": [0.8, 1.2]}}, "saturation": {"type": "ColorJitter", "kwargs": {"saturation": [0.8, 1.2]}}, "hue": {"type": "ColorJitter", "kwargs": {"hue": [-0.05, 0.05]}}}' \
+    --batch_size=8 \
+    --steps=150000 \
     --output_dir=outputs/train/openvla-oft-libero
 ```
 
